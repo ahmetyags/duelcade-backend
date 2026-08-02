@@ -1,0 +1,17 @@
+services:
+  game-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 2567
+    ports:
+      - "2567:2567"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:2567/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
