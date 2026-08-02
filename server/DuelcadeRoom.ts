@@ -329,13 +329,11 @@ export class DuelcadeRoom extends Room {
     client.userData = { playerId: parsed.playerId, registered: false };
     this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
-        client.leave(
+        this.evictClient(
+          client,
           SERVER_CLOSE_CODE.REGISTRATION_TIMEOUT,
           'Player registration timed out',
         );
-        if (this.game.status === 'waiting') {
-          void this.unlock().catch(() => undefined);
-        }
       }
     }, ROOM_REGISTRATION_TIMEOUT_MS);
   }
@@ -415,10 +413,7 @@ export class DuelcadeRoom extends Room {
   }
 
   async onLeave(client: EscapeClient): Promise<void> {
-    if (!client.userData?.registered) {
-      if (this.game.status === 'waiting') await this.unlock();
-      return;
-    }
+    if (!client.userData?.registered) return;
     const player = this.findPlayer(client);
     if (!player) return;
     this.game.players = this.game.players.filter((item) => item.id !== player.id);
@@ -439,10 +434,12 @@ export class DuelcadeRoom extends Room {
         },
       });
       for (const remainingClient of this.clients as unknown as EscapeClient[]) {
-        remainingClient.leave(SERVER_CLOSE_CODE.HOST_LEFT, 'Host left the room');
+        this.evictClient(
+          remainingClient,
+          SERVER_CLOSE_CODE.HOST_LEFT,
+          'Host left the room',
+        );
       }
-    } else if (this.game.status === 'waiting') {
-      await this.unlock();
     }
   }
 
@@ -507,7 +504,7 @@ export class DuelcadeRoom extends Room {
         this.registerGuest(client, message.payload);
         break;
       case 'room.leave':
-        client.leave(1000);
+        this.evictClient(client, 1000, message.payload.reason);
         break;
       case 'player.ready':
         this.setReady(client, message.payload.ready);
@@ -1394,15 +1391,24 @@ export class DuelcadeRoom extends Room {
     this.sendError(client, errorCode, userMessageKey, false);
     this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
-        client.leave(
+        this.evictClient(
+          client,
           SERVER_CLOSE_CODE.REGISTRATION_REJECTED,
           userMessageKey,
         );
-        if (this.game.status === 'waiting') {
-          void this.unlock().catch(() => undefined);
-        }
       }
     }, 50);
+  }
+
+  private evictClient(client: EscapeClient, code: number, reason: string): void {
+    client.leave(code, reason);
+    this.clock.setTimeout(() => {
+      const connection = client.ref as typeof client.ref & {
+        readyState?: number;
+        terminate?: () => void;
+      };
+      if (connection.readyState !== 3) connection.terminate?.();
+    }, 500);
   }
 
   private broadcastEvent(event: ServerEvent): void {
