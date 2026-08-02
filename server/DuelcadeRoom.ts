@@ -327,13 +327,15 @@ export class DuelcadeRoom extends Room {
   onJoin(client: EscapeClient, options: unknown): void {
     const parsed = JoinOptionsSchema.parse(options);
     client.userData = { playerId: parsed.playerId, registered: false };
-    this.clock.setTimeout(async () => {
+    this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
-        if (this.game.status === 'waiting') await this.unlock();
         client.leave(
           SERVER_CLOSE_CODE.REGISTRATION_TIMEOUT,
           'Player registration timed out',
         );
+        if (this.game.status === 'waiting') {
+          void this.unlock().catch(() => undefined);
+        }
       }
     }, ROOM_REGISTRATION_TIMEOUT_MS);
   }
@@ -1390,13 +1392,15 @@ export class DuelcadeRoom extends Room {
     userMessageKey: string,
   ): void {
     this.sendError(client, errorCode, userMessageKey, false);
-    this.clock.setTimeout(async () => {
+    this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
-        if (this.game.status === 'waiting') await this.unlock();
         client.leave(
           SERVER_CLOSE_CODE.REGISTRATION_REJECTED,
           userMessageKey,
         );
+        if (this.game.status === 'waiting') {
+          void this.unlock().catch(() => undefined);
+        }
       }
     }, 50);
   }
