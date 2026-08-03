@@ -7,18 +7,14 @@ import type {
   TurnMoveResult,
 } from '../types/turnGame';
 
-const MODES: TurnGameMode[] = [
+export const CORE_TURN_GAME_MODES = [
   'rune_grid',
-  'pipe_circuit',
-  'connect_four',
-  'resonance_dials',
   'memory_pairs',
-  'cipher_clash',
   'circuit_claim',
   'neon_trail',
-  'gateway_race',
-  'polarity_war',
-];
+] as const satisfies readonly TurnGameMode[];
+
+const MODES: TurnGameMode[] = [...CORE_TURN_GAME_MODES];
 
 interface BoardConfig {
   rows: number;
@@ -34,12 +30,12 @@ const DIFFICULTY_INDEX: Record<Difficulty, number> = {
 };
 
 export function normalizeMatchDurationMinutes(value: number): number {
-  if (!Number.isFinite(value)) return 5;
-  return Math.max(2, Math.min(25, Math.round(value)));
+  if (!Number.isFinite(value)) return 3;
+  return Math.max(2, Math.min(5, Math.round(value)));
 }
 
 export function roundCountForDuration(minutes: number): number {
-  return Math.max(3, Math.min(10, normalizeMatchDurationMinutes(minutes)));
+  return Math.max(3, normalizeMatchDurationMinutes(minutes));
 }
 
 /** Convert a resonance dial step into the public frequency shown to both players. */
@@ -113,12 +109,20 @@ function boardConfig(mode: TurnGameMode, difficulty: Difficulty): BoardConfig {
   return { rows: dialCount, columns: 1, winLength: 0 };
 }
 
-function createModeOrder(seed: string, totalRounds: number): TurnGameMode[] {
+function createModeOrder(
+  seed: string,
+  totalRounds: number,
+  modePool: readonly TurnGameMode[],
+): TurnGameMode[] {
   const result: TurnGameMode[] = [];
   let cycle = 0;
   while (result.length < totalRounds) {
-    const shuffled = new SeededRandom(`${seed}_mode_cycle_${cycle}`).shuffle([...MODES]);
-    if (result.length > 0 && shuffled[0] === result[result.length - 1]) {
+    const shuffled = new SeededRandom(`${seed}_mode_cycle_${cycle}`).shuffle([...modePool]);
+    if (
+      shuffled.length > 1
+      && result.length > 0
+      && shuffled[0] === result[result.length - 1]
+    ) {
       [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
     }
     result.push(...shuffled);
@@ -393,9 +397,11 @@ export function createTurnMatchSession(
   totalRounds = 5,
   difficulty: Difficulty = 'easy',
   playerTimeLimitMs = 5 * 60 * 1000,
+  modePool: readonly TurnGameMode[] = MODES,
 ): TurnMatchSession {
   const normalizedRounds = Math.max(1, totalRounds);
-  const modeOrder = createModeOrder(seed, normalizedRounds);
+  const selectedModes = modePool.length > 0 ? modePool : MODES;
+  const modeOrder = createModeOrder(seed, normalizedRounds, selectedModes);
   return newRound(
     seed,
     playerIds,

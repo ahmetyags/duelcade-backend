@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  CORE_TURN_GAME_MODES,
   advanceTurnRound,
   applyTurnMove,
   createTurnMatchSession,
@@ -21,22 +22,23 @@ function sessionForMode(
   mode: TurnGameMode,
   difficulty: Difficulty = 'easy',
 ): TurnMatchSession {
-  const session = createTurnMatchSession(`mode-${mode}-${difficulty}`, ['a', 'b'], 10, difficulty);
-  while (session.state.mode !== mode) {
-    session.state.status = 'round_complete';
-    assert.equal(advanceTurnRound(session), true);
-  }
-  return session;
+  return createTurnMatchSession(
+    `mode-${mode}-${difficulty}`,
+    ['a', 'b'],
+    1,
+    difficulty,
+    5 * 60 * 1000,
+    [mode],
+  );
 }
 
 test('free duration slider values are normalized and scale the round count', () => {
   assert.equal(normalizeMatchDurationMinutes(1), 2);
-  assert.equal(normalizeMatchDurationMinutes(7.6), 8);
-  assert.equal(normalizeMatchDurationMinutes(20), 20);
-  assert.equal(normalizeMatchDurationMinutes(30), 25);
+  assert.equal(normalizeMatchDurationMinutes(3.6), 4);
+  assert.equal(normalizeMatchDurationMinutes(20), 5);
+  assert.equal(normalizeMatchDurationMinutes(Number.NaN), 3);
   assert.equal(roundCountForDuration(2), 3);
-  assert.equal(roundCountForDuration(7), 7);
-  assert.equal(roundCountForDuration(25), 10);
+  assert.equal(roundCountForDuration(5), 5);
 });
 
 test('rune grid rejects duplicate/out-of-turn moves and detects a win', () => {
@@ -63,9 +65,13 @@ test('round order is seeded, shuffled and preserves match score', () => {
   const session = createTurnMatchSession('rotation-test', ['a', 'b'], 5);
   const sameSeed = createTurnMatchSession('rotation-test', ['a', 'b'], 5);
   assert.deepEqual(session.modeOrder, sameSeed.modeOrder);
-  assert.notDeepEqual(session.modeOrder, [
-    'rune_grid', 'pipe_circuit', 'connect_four', 'resonance_dials', 'memory_pairs',
-  ]);
+  assert.equal(
+    session.modeOrder.every((mode) => CORE_TURN_GAME_MODES.includes(
+      mode as (typeof CORE_TURN_GAME_MODES)[number],
+    )),
+    true,
+  );
+  assert.equal(new Set(session.modeOrder).size, CORE_TURN_GAME_MODES.length);
   session.state.status = 'round_complete';
   session.state.scores = [1, 0];
   assert.equal(advanceTurnRound(session), true);
