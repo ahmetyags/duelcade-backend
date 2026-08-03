@@ -25,6 +25,7 @@ import type {
   RotateSessionInput,
   StoredPlayer,
 } from '../server/persistence/types';
+import type { AnalyticsEvent } from '../server/analytics';
 import type { BackendRuntime } from '../server/runtime';
 import { authenticateRoomClient } from '../server/runtime';
 import type { ServerMessage } from '../types/network';
@@ -49,6 +50,7 @@ class MemoryStore implements PersistenceStore {
     progress: number;
     claimed: boolean;
   }>>();
+  readonly analyticsEvents: { playerId: string; event: AnalyticsEvent }[] = [];
 
   async initialize(): Promise<void> {}
   async close(): Promise<void> {}
@@ -239,6 +241,14 @@ class MemoryStore implements PersistenceStore {
     return progression
       ? { status: 'equipped', progression }
       : { status: 'not_owned' };
+  }
+
+  async recordAnalyticsEvents(
+    playerId: string,
+    events: readonly AnalyticsEvent[],
+  ): Promise<number> {
+    for (const event of events) this.analyticsEvents.push({ playerId, event });
+    return events.length;
   }
 
   private ensureQuests(playerId: string): Map<QuestKey, {
@@ -472,6 +482,57 @@ test('secure guest identity rotates tokens, owns the room seat and records match
     assert.equal(equipped.progression.totalXp, 155);
     assert.equal(equipped.progression.level, 2);
     assert.equal(equipped.progression.equipped.avatar, 'bot');
+
+    const analyticsResponse = await fetch(`${baseUrl}/v1/analytics/events`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        contractVersion: 1,
+        events: [{
+          id: 'f4c6ddea-4dd4-43b7-b2d2-a41280cc92a0',
+          name: 'match_completed',
+          sessionId: '180ddca2-96ca-4f2d-8460-bf09edbd4ae0',
+          occurredAt: Date.now(),
+          platform: 'web',
+          appVersion: '1.0.0',
+          properties: {
+            playMode: 'online',
+            difficulty: 'easy',
+            result: 'win',
+            durationBucket: 'under_2m',
+            roundCount: 2,
+          },
+        }],
+      }),
+    });
+    assert.equal(analyticsResponse.status, 202);
+    assert.deepEqual(await analyticsResponse.json(), { accepted: 1 });
+    assert.equal(store.analyticsEvents[0].playerId, hostAuth.player.id);
+
+    const unsafeAnalytics = await fetch(`${baseUrl}/v1/analytics/events`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        contractVersion: 1,
+        events: [{
+          id: '6ab8dbe7-7235-4db9-8d51-570b8050bb83',
+          name: 'match_completed',
+          sessionId: '180ddca2-96ca-4f2d-8460-bf09edbd4ae0',
+          occurredAt: Date.now(),
+          platform: 'web',
+          appVersion: '1.0.0',
+          properties: { roomCode: 'SECRET' },
+        }],
+      }),
+    });
+    assert.equal(unsafeAnalytics.status, 400);
+    assert.equal(store.analyticsEvents.length, 1);
   } finally {
     await hostRoom?.leave();
     await guestRoom?.leave();

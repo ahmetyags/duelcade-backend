@@ -12,6 +12,7 @@ Bu proje şu anda:
 - PostgreSQL üzerinde kalıcı maç geçmişini,
 - idempotent XP ledger'ını, oyuncu seviyesini ve dört çekirdek mod ustalığını,
 - günlük görev ilerlemesini ve yalnızca görsel kozmetik envanterini,
+- açık rızaya bağlı, izin listeli ve 90 gün saklanan ürün analitiğini,
 - HTTP health endpoint'ini
 
 yönetir.
@@ -41,12 +42,19 @@ GET /v1/matches
 GET /v1/progression
 POST /v1/quests/:questKey/claim
 PATCH /v1/me/cosmetics
+POST /v1/analytics/events
 ```
 
 Access tokenlar 15 dakika geçerlidir. Uzun ömürlü refresh tokenlar açık metin
 olarak saklanmaz; SHA-256 özetleri PostgreSQL'de tutulur ve her yenilemede
 değiştirilir. WebSocket oda koltuğunun kimliği access token içindeki sunucu
 üretimli oyuncu UUID'sinden alınır.
+
+Analitik endpoint'i geçerli access token ister, en fazla 25 olaylık batch kabul
+eder ve olay adı/özelliklerini kapalı bir şemayla doğrular. İstemciden oyuncu
+kimliği alınmaz; kayıt token sahibine bağlanır. Oda kodu, isim, mesaj, reklam
+kimliği, serbest metin ve ham IP analitik kaydına yazılmaz. Kayıtlar yeni batch
+alındığında 90 günlük saklama süresine göre temizlenir.
 
 Render Blueprint aynı Frankfurt bölgesinde dış erişime kapalı
 `duelcade-postgres` veritabanını oluşturur ve servise internal `DATABASE_URL`
@@ -88,8 +96,8 @@ tests/    Motor ve gerçek socket entegrasyon testleri
 
 ## Sonraki backend aşaması
 
-1. Mobil uygulamada güvenli oturum ve maç geçmişi ekranı
-2. PostgreSQL ilerleme, görev ve kozmetik modelleri
+1. Kapalı test grubunu ve test geri bildirim akışını hazırlamak
+2. Veriye göre öğretici, zorluk ve maç süresini ayarlamak
 3. Redis oda kodu rezervasyonu ve matchmaking
 4. Mobil uygulamanın tüketebileceği sürümlenmiş protocol paketi
-5. Analytics, hata izleme ve production readiness endpoint'i
+5. Leaderboard ve canlı etkinlik altyapısı

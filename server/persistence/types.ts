@@ -6,6 +6,7 @@ import type {
   CosmeticType,
   QuestKey,
 } from '../progression';
+import type { AnalyticsEvent } from '../analytics';
 
 export interface StoredPlayer {
   id: string;
@@ -129,4 +130,8 @@ export interface PersistenceStore {
     itemId: string,
     date: string,
   ): Promise<EquipCosmeticResult>;
+  recordAnalyticsEvents(
+    playerId: string,
+    events: readonly AnalyticsEvent[],
+  ): Promise<number>;
 }

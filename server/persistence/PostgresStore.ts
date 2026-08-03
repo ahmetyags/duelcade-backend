@@ -28,6 +28,11 @@ import type {
   RotateSessionInput,
   StoredPlayer,
 } from './types';
+import {
+  ANALYTICS_RETENTION_DAYS,
+  clampAnalyticsTimestamp,
+  type AnalyticsEvent,
+} from '../analytics';
 
 function rowPlayer(row: {
   id: string;
@@ -119,8 +124,8 @@ export class PostgresStore implements PersistenceStore {
         'SELECT 1 FROM schema_migrations WHERE id = $1',
         ['002_player_progression'],
       );
-      if (progressionApplied.rowCount === 1) return;
-      await client.query(`
+      if (progressionApplied.rowCount !== 1) {
+        await client.query(`
         ALTER TABLE players
           ADD COLUMN total_xp integer NOT NULL DEFAULT 0,
           ADD COLUMN equipped_avatar varchar(40) NOT NULL DEFAULT 'sparkles',
@@ -168,17 +173,46 @@ export class PostgresStore implements PersistenceStore {
           updated_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (player_id, quest_date, quest_key)
         );
-      `);
-      for (const item of COSMETIC_CATALOG.filter((candidate) => candidate.unlockLevel === 1)) {
-        await client.query(`
+        `);
+        for (const item of COSMETIC_CATALOG.filter((candidate) => candidate.unlockLevel === 1)) {
+          await client.query(`
           INSERT INTO player_inventory (player_id, cosmetic_type, item_id, source)
           SELECT id, $1, $2, 'starter' FROM players
           ON CONFLICT DO NOTHING
-        `, [item.type, item.itemId]);
+          `, [item.type, item.itemId]);
+        }
+        await client.query(
+          'INSERT INTO schema_migrations (id) VALUES ($1)',
+          ['002_player_progression'],
+        );
       }
+
+      const analyticsApplied = await client.query(
+        'SELECT 1 FROM schema_migrations WHERE id = $1',
+        ['003_privacy_safe_analytics'],
+      );
+      if (analyticsApplied.rowCount === 1) return;
+      await client.query(`
+        CREATE TABLE analytics_events (
+          id uuid PRIMARY KEY,
+          player_id uuid NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+          event_name varchar(40) NOT NULL,
+          session_id uuid NOT NULL,
+          occurred_at timestamptz NOT NULL,
+          platform varchar(12) NOT NULL,
+          app_version varchar(32) NOT NULL,
+          contract_version smallint NOT NULL,
+          properties jsonb NOT NULL DEFAULT '{}'::jsonb,
+          created_at timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE INDEX analytics_events_name_time_idx
+          ON analytics_events(event_name, occurred_at DESC);
+        CREATE INDEX analytics_events_player_time_idx
+          ON analytics_events(player_id, occurred_at DESC);
+      `);
       await client.query(
         'INSERT INTO schema_migrations (id) VALUES ($1)',
-        ['002_player_progression'],
+        ['003_privacy_safe_analytics'],
       );
     });
   }
@@ -465,6 +499,45 @@ export class PostgresStore implements PersistenceStore {
       const progression = await this.readProgression(client, playerId, date);
       if (!progression) return { status: 'not_owned' };
       return { status: 'equipped', progression };
+    });
+  }
+
+  async recordAnalyticsEvents(
+    playerId: string,
+    events: readonly AnalyticsEvent[],
+  ): Promise<number> {
+    return this.transaction(async (client) => {
+      let accepted = 0;
+      const now = Date.now();
+      for (const event of events) {
+        const inserted = await client.query(`
+          INSERT INTO analytics_events (
+            id, player_id, event_name, session_id, occurred_at,
+            platform, app_version, contract_version, properties
+          )
+          VALUES (
+            $1, $2, $3, $4, to_timestamp($5 / 1000.0),
+            $6, $7, 1, $8::jsonb
+          )
+          ON CONFLICT (id) DO NOTHING
+          RETURNING id
+        `, [
+          event.id,
+          playerId,
+          event.name,
+          event.sessionId,
+          clampAnalyticsTimestamp(event.occurredAt, now),
+          event.platform,
+          event.appVersion,
+          JSON.stringify(event.properties),
+        ]);
+        accepted += inserted.rowCount ?? 0;
+      }
+      await client.query(`
+        DELETE FROM analytics_events
+        WHERE created_at < now() - ($1 * interval '1 day')
+      `, [ANALYTICS_RETENTION_DAYS]);
+      return accepted;
     });
   }
 

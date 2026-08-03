@@ -9,6 +9,7 @@ import {
   type QuestKey,
 } from './progression';
 import type { BackendRuntime } from './runtime';
+import { AnalyticsBatchSchema } from './analytics';
 
 const DisplayNameSchema = z.string().trim().min(1).max(24);
 const GuestSchema = z.object({
@@ -325,6 +326,29 @@ export function configureApi(
         : 'COSMETIC_NOT_OWNED',
     });
   });
+
+  router.post(
+    '/v1/analytics/events',
+    rateLimit(60 * 1000, 30),
+    async (request: Request, response: Response) => {
+      if (!runtime.store) {
+        sendUnavailable(response);
+        return;
+      }
+      const playerId = requirePlayer(runtime, request, response);
+      if (!playerId) return;
+      const parsed = AnalyticsBatchSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: 'INVALID_ANALYTICS_BATCH' });
+        return;
+      }
+      const accepted = await runtime.store.recordAnalyticsEvents(
+        playerId,
+        parsed.data.events,
+      );
+      response.status(202).json({ accepted });
+    },
+  );
 
   router.use((
     error: unknown,
