@@ -1,13 +1,23 @@
 import { createGameServer } from './app';
+import { createRuntimeFromEnvironment } from './runtime';
 
 const port = Number(process.env.PORT ?? 2567);
 
-export const server = createGameServer();
+async function start(): Promise<void> {
+  const runtime = await createRuntimeFromEnvironment();
+  const server = createGameServer(runtime);
 
-server.listen(port)
-  .then(() => {
-    console.log(`[server] Duelcade listening on port ${port}`);
-  })
+  await server.listen(port);
+  console.log(`[server] Duelcade listening on port ${port}`);
+
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      void runtime.store?.close();
+    });
+  }
+}
+
+start()
   .catch((error: unknown) => {
     console.error('[server] Failed to start', error);
     process.exitCode = 1;

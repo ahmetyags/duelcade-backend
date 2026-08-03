@@ -4,10 +4,28 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
-    branch: master
+    branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: duelcade-postgres
+          property: connectionString
+      - key: AUTH_TOKEN_SECRET
+        generateValue: true
+      - key: ALLOW_LEGACY_PLAYER_IDS
+        value: "true"
+      - key: ALLOWED_ORIGINS
+        value: https://duelcade.expo.app
+
+databases:
+  - name: duelcade-postgres
+    plan: free
+    region: frankfurt
+    databaseName: duelcade
+    user: duelcade
+    ipAllowList: []

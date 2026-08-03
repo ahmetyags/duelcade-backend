@@ -1,4 +1,4 @@
-import { Client, Room } from 'colyseus';
+import { Client, Room, type AuthContext } from 'colyseus';
 import { z } from 'zod';
 
 import { SeededRandom } from '../engine/SeededRandom';
@@ -39,6 +39,13 @@ import { PROTOCOL_VERSION, SERVER_CLOSE_CODE } from '../types/network';
 import type { PuzzleState } from '../types/puzzle';
 import type { TurnMatchSession } from '../types/turnGame';
 import { PLAYER_AVATAR_IDS, type PlayerAvatarId } from '../types/profile';
+import {
+  authenticateRoomClient,
+  createDisabledRuntime,
+  persistMatch,
+  type BackendRuntime,
+  type RoomAuthData,
+} from './runtime';
 
 const DEFAULT_MATCH_DURATION_MINUTES = 5;
 const RECONNECT_GRACE_SECONDS = 60;
@@ -184,6 +191,7 @@ const ClientEventSchema = z.discriminatedUnion('event', [
 interface ClientData {
   playerId: string;
   registered: boolean;
+  authenticated: boolean;
 }
 
 interface PlayerPosition {
@@ -219,6 +227,8 @@ interface EscapeState {
   turnSession: TurnMatchSession | null;
   lastTurnTickAt: number | null;
   forfeitedPlayerId: string | null;
+  authenticatedPlayerIds: Set<string>;
+  matchPersisted: boolean;
 }
 
 type EscapeClient = Client<{ userData: ClientData }>;
@@ -291,6 +301,7 @@ function makeWorldObjects(): InteractableObject[] {
 }
 
 export class DuelcadeRoom extends Room {
+  static runtime: BackendRuntime = createDisabledRuntime();
   maxClients = 2;
   maxMessagesPerSecond = 30;
   private game: EscapeState = this.createInitialState('easy', DEFAULT_MATCH_DURATION_MINUTES);
@@ -320,13 +331,35 @@ export class DuelcadeRoom extends Room {
     this.clock.setInterval(() => this.tickGameTimer(), 1000);
   }
 
-  onAuth(_client: EscapeClient, options: unknown): boolean {
-    return JoinOptionsSchema.safeParse(options).success;
+  onAuth(
+    _client: EscapeClient,
+    options: unknown,
+    context: AuthContext,
+  ): RoomAuthData | false {
+    const parsed = JoinOptionsSchema.safeParse(options);
+    if (!parsed.success) return false;
+    return authenticateRoomClient(
+      (this.constructor as typeof DuelcadeRoom).runtime,
+      context,
+      parsed.data.playerId,
+    );
   }
 
-  onJoin(client: EscapeClient, options: unknown): void {
+  onJoin(client: EscapeClient, options: unknown, auth?: RoomAuthData): void {
     const parsed = JoinOptionsSchema.parse(options);
-    client.userData = { playerId: parsed.playerId, registered: false };
+    if (!auth) {
+      this.evictClient(
+        client,
+        SERVER_CLOSE_CODE.REGISTRATION_REJECTED,
+        'Player authentication failed',
+      );
+      return;
+    }
+    client.userData = {
+      playerId: auth.playerId,
+      registered: false,
+      authenticated: auth.authenticated,
+    };
     this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
         this.evictClient(
@@ -478,6 +511,8 @@ export class DuelcadeRoom extends Room {
       turnSession: null,
       lastTurnTickAt: null,
       forfeitedPlayerId: null,
+      authenticatedPlayerIds: new Set(),
+      matchPersisted: false,
     };
   }
 
@@ -583,6 +618,9 @@ export class DuelcadeRoom extends Room {
       true,
     );
     clientData.registered = true;
+    if (clientData.authenticated) {
+      this.game.authenticatedPlayerIds.add(clientData.playerId);
+    }
     this.game.players.push(player);
     this.game.positions.set(player.id, { x: 50, y: 132, sequence: 0 });
     this.sendRoomSnapshot(client, false);
@@ -634,6 +672,9 @@ export class DuelcadeRoom extends Room {
       false,
     );
     clientData.registered = true;
+    if (clientData.authenticated) {
+      this.game.authenticatedPlayerIds.add(clientData.playerId);
+    }
     this.game.players.push(player);
     this.game.positions.set(player.id, { x: 50, y: 132, sequence: 0 });
     this.broadcastEvent({ event: 'player.joined', payload: { player } });
@@ -1131,6 +1172,7 @@ export class DuelcadeRoom extends Room {
 
     const difficulty = this.game.difficulty;
     const matchDurationMinutes = this.game.matchDurationMinutes;
+    const authenticatedPlayerIds = new Set(this.game.authenticatedPlayerIds);
     const players = this.game.players.map((item) => ({
       ...item,
       role: null,
@@ -1138,6 +1180,7 @@ export class DuelcadeRoom extends Room {
     }));
     this.game = this.createInitialState(difficulty, matchDurationMinutes);
     this.game.players = players;
+    this.game.authenticatedPlayerIds = authenticatedPlayerIds;
     for (const item of players) this.game.positions.set(item.id, { x: 50, y: 132, sequence: 0 });
     this.broadcastSnapshots(false);
   }
@@ -1146,6 +1189,7 @@ export class DuelcadeRoom extends Room {
     this.game.finishedAt = Date.now();
     this.game.status = 'completed';
     this.game.result = this.createResult(true, null, this.currentEnding());
+    this.persistCurrentMatch();
     this.broadcastEvent({
       event: 'game.completed',
       payload: { result: this.game.result },
@@ -1165,6 +1209,7 @@ export class DuelcadeRoom extends Room {
     this.game.finishedAt = Date.now();
     this.game.status = 'failed';
     this.game.result = this.createResult(false, reason, null);
+    this.persistCurrentMatch();
     this.broadcastEvent({
       event: 'game.failed',
       payload: { result: this.game.result },
@@ -1210,6 +1255,29 @@ export class DuelcadeRoom extends Room {
       };
     }
     return result;
+  }
+
+  private persistCurrentMatch(): void {
+    if (
+      this.game.matchPersisted
+      || !this.game.result
+      || !this.game.startedAt
+      || !this.game.finishedAt
+    ) return;
+    this.game.matchPersisted = true;
+    const id = `${this.roomId}:${this.game.startedAt}`;
+    void persistMatch((this.constructor as typeof DuelcadeRoom).runtime, {
+      id,
+      roomId: this.roomId,
+      startedAt: this.game.startedAt,
+      finishedAt: this.game.finishedAt,
+      difficulty: this.game.difficulty,
+      totalRounds: this.game.turnSession?.state.totalRounds ?? this.game.puzzleCount,
+      modeOrder: this.game.turnSession?.modeOrder ?? [],
+      players: this.game.players.map((player) => ({ ...player })),
+      authenticatedPlayerIds: new Set(this.game.authenticatedPlayerIds),
+      result: this.game.result,
+    });
   }
 
   private resumeTimerIfReady(): void {

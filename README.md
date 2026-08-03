@@ -8,6 +8,8 @@ Bu proje şu anda:
 - sıra tabanlı oyun kurallarını,
 - hamle, süre, skor ve sonuç doğrulamasını,
 - oda koltuğu ve oyuncu kimliği korumalarını,
+- sunucu üretimli anonim oyuncu kimliğini ve döndürülen oturum tokenlarını,
+- PostgreSQL üzerinde kalıcı maç geçmişini,
 - HTTP health endpoint'ini
 
 yönetir.
@@ -29,7 +31,21 @@ Sunucu varsayılan olarak `http://localhost:2567` adresinde çalışır.
 
 ```text
 GET /health
+POST /v1/auth/guest
+POST /v1/auth/refresh
+POST /v1/auth/logout
+GET|PATCH /v1/me
+GET /v1/matches
 ```
+
+Access tokenlar 15 dakika geçerlidir. Uzun ömürlü refresh tokenlar açık metin
+olarak saklanmaz; SHA-256 özetleri PostgreSQL'de tutulur ve her yenilemede
+değiştirilir. WebSocket oda koltuğunun kimliği access token içindeki sunucu
+üretimli oyuncu UUID'sinden alınır.
+
+Render Blueprint aynı Frankfurt bölgesinde dış erişime kapalı
+`duelcade-postgres` veritabanını oluşturur ve servise internal `DATABASE_URL`
+verir. `AUTH_TOKEN_SECRET` Blueprint tarafından rastgele üretilir.
 
 ## Doğrulama
 
@@ -39,7 +55,8 @@ npm test
 npm run verify
 ```
 
-Test paketi oyun motorunu, iki istemcili gerçek Colyseus maçını, kimlik
+Test paketi oyun motorunu, iki istemcili gerçek Colyseus maçını, token
+döndürmeyi, sahte istemci kimliğinin reddini, kalıcı maç kaydını, kimlik
 çakışmasını ve kayıt olmadan oda koltuğu işgalini kapsar.
 
 ## Mobil uygulama bağlantısı
@@ -65,8 +82,8 @@ tests/    Motor ve gerçek socket entegrasyon testleri
 
 ## Sonraki backend aşaması
 
-1. Sunucu üretimli misafir kimliği ve kısa ömürlü join ticket
-2. PostgreSQL oyuncu, maç ve ilerleme modelleri
-3. Redis oda kodu rezervasyonu, matchmaking ve rate limiting
+1. Mobil uygulamada güvenli oturum ve maç geçmişi ekranı
+2. PostgreSQL ilerleme, görev ve kozmetik modelleri
+3. Redis oda kodu rezervasyonu ve matchmaking
 4. Mobil uygulamanın tüketebileceği sürümlenmiş protocol paketi
 5. Analytics, hata izleme ve production readiness endpoint'i

@@ -1,0 +1,289 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { Client, type Room } from '@colyseus/sdk';
+
+import { createGameServer } from '../server/app';
+import { TokenService } from '../server/auth/Tokens';
+import type {
+  CreateGuestSessionInput,
+  MatchHistoryItem,
+  MatchRecord,
+  PersistenceStore,
+  RotateSessionInput,
+  StoredPlayer,
+} from '../server/persistence/types';
+import type { BackendRuntime } from '../server/runtime';
+import { authenticateRoomClient } from '../server/runtime';
+import type { ServerMessage } from '../types/network';
+
+class MemoryStore implements PersistenceStore {
+  readonly available = true;
+  readonly players = new Map<string, StoredPlayer>();
+  readonly sessions = new Map<string, {
+    playerId: string;
+    sessionId: string;
+    expiresAt: number;
+  }>();
+  readonly matches: MatchRecord[] = [];
+
+  async initialize(): Promise<void> {}
+  async close(): Promise<void> {}
+
+  async createGuestSession(input: CreateGuestSessionInput): Promise<StoredPlayer> {
+    const player = {
+      id: input.playerId,
+      displayName: input.displayName,
+      createdAt: Date.now(),
+    };
+    this.players.set(player.id, player);
+    this.sessions.set(input.refreshTokenHash, {
+      playerId: player.id,
+      sessionId: input.sessionId,
+      expiresAt: input.refreshTokenExpiresAt,
+    });
+    return player;
+  }
+
+  async rotateSession(input: RotateSessionInput): Promise<{
+    player: StoredPlayer;
+    sessionId: string;
+  } | null> {
+    const current = this.sessions.get(input.currentRefreshTokenHash);
+    if (!current || current.expiresAt <= input.now) return null;
+    const player = this.players.get(current.playerId);
+    if (!player) return null;
+    this.sessions.delete(input.currentRefreshTokenHash);
+    this.sessions.set(input.nextRefreshTokenHash, {
+      ...current,
+      expiresAt: input.nextRefreshTokenExpiresAt,
+    });
+    return { player, sessionId: current.sessionId };
+  }
+
+  async revokeSession(refreshTokenHash: string): Promise<void> {
+    this.sessions.delete(refreshTokenHash);
+  }
+
+  async updatePlayerName(playerId: string, displayName: string): Promise<StoredPlayer | null> {
+    const current = this.players.get(playerId);
+    if (!current) return null;
+    const player = { ...current, displayName };
+    this.players.set(playerId, player);
+    return player;
+  }
+
+  async getPlayer(playerId: string): Promise<StoredPlayer | null> {
+    return this.players.get(playerId) ?? null;
+  }
+
+  async recordMatch(record: MatchRecord): Promise<void> {
+    if (!this.matches.some((match) => match.id === record.id)) this.matches.push(record);
+  }
+
+  async listMatches(playerId: string, limit: number): Promise<MatchHistoryItem[]> {
+    return this.matches
+      .filter((match) => match.authenticatedPlayerIds.has(playerId))
+      .slice(-limit)
+      .reverse()
+      .map((match) => {
+        const opponent = match.players.find((player) => player.id !== playerId);
+        return {
+          id: match.id,
+          roomId: match.roomId,
+          startedAt: match.startedAt,
+          finishedAt: match.finishedAt,
+          difficulty: match.difficulty,
+          totalRounds: match.totalRounds,
+          modeOrder: match.modeOrder,
+          winnerPlayerId: match.result.winnerPlayerId ?? null,
+          forfeitedPlayerId: match.result.forfeitedPlayerId ?? null,
+          score: match.result.playerScores?.[playerId] ?? 0,
+          opponentDisplayName: opponent?.displayName ?? 'DuelBot',
+          opponentScore: opponent
+            ? match.result.playerScores?.[opponent.id] ?? 0
+            : 0,
+        };
+      });
+  }
+}
+
+interface AuthResponse {
+  player: StoredPlayer;
+  accessToken: string;
+  accessTokenExpiresAt: number;
+  refreshToken: string;
+  refreshTokenExpiresAt: number;
+}
+
+function waitForEvent(
+  room: Room,
+  eventName: ServerMessage['payload']['event'],
+  predicate: (message: ServerMessage) => boolean = () => true,
+  timeoutMs = 5_000,
+): Promise<ServerMessage> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`Timed out waiting for ${eventName}`));
+    }, timeoutMs);
+    const unsubscribe = room.onMessage<ServerMessage>('event', (message) => {
+      if (message.payload.event !== eventName || !predicate(message)) return;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(message);
+    });
+  });
+}
+
+async function createGuest(baseUrl: string, displayName: string): Promise<AuthResponse> {
+  const response = await fetch(`${baseUrl}/v1/auth/guest`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ displayName }),
+  });
+  assert.equal(response.status, 201);
+  return response.json() as Promise<AuthResponse>;
+}
+
+test('secure guest identity rotates tokens, owns the room seat and records match history', async () => {
+  const store = new MemoryStore();
+  const runtime: BackendRuntime = {
+    store,
+    tokens: new TokenService('test-secret-with-at-least-thirty-two-bytes-long'),
+    allowLegacyPlayerIds: true,
+  };
+  const server = createGameServer(runtime);
+  const port = 33_000 + Math.floor(Math.random() * 1_000);
+  await server.listen(port, '127.0.0.1');
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let hostRoom: Room | null = null;
+  let guestRoom: Room | null = null;
+
+  try {
+    const hostAuth = await createGuest(baseUrl, 'Ada');
+    const guestAuth = await createGuest(baseUrl, 'Mert');
+    assert.match(hostAuth.player.id, /^[0-9a-f-]{36}$/);
+
+    const meResponse = await fetch(`${baseUrl}/v1/me`, {
+      headers: { authorization: `Bearer ${hostAuth.accessToken}` },
+    });
+    assert.equal(meResponse.status, 200);
+
+    const refreshResponse = await fetch(`${baseUrl}/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: hostAuth.refreshToken }),
+    });
+    assert.equal(refreshResponse.status, 200);
+    const rotated = await refreshResponse.json() as AuthResponse;
+    assert.notEqual(rotated.refreshToken, hostAuth.refreshToken);
+    const reusedResponse = await fetch(`${baseUrl}/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: hostAuth.refreshToken }),
+    });
+    assert.equal(reusedResponse.status, 401);
+
+    const hostClient = new Client(baseUrl);
+    hostClient.auth.token = rotated.accessToken;
+    hostRoom = await hostClient.create('duelcade', {
+      playerId: 'spoofed-host-id',
+      protocolVersion: '1.9.0',
+    });
+    const createdPromise = waitForEvent(hostRoom, 'room.snapshot');
+    hostRoom.send('event', {
+      event: 'room.create',
+      payload: {
+        displayName: 'Ada',
+        avatarId: 'sparkles',
+        rolePreference: 'no_preference',
+        difficulty: 'easy',
+        matchDurationMinutes: 2,
+      },
+    });
+    const created = await createdPromise;
+    assert.equal(created.playerId, hostAuth.player.id);
+    assert.equal(
+      created.payload.event === 'room.snapshot'
+        ? created.payload.payload.room.hostId
+        : null,
+      hostAuth.player.id,
+    );
+
+    const guestClient = new Client(baseUrl);
+    guestClient.auth.token = guestAuth.accessToken;
+    guestRoom = await guestClient.joinById(created.roomId, {
+      playerId: 'spoofed-guest-id',
+      protocolVersion: '1.9.0',
+    });
+    const joinedPromise = waitForEvent(guestRoom, 'room.snapshot');
+    guestRoom.send('event', {
+      event: 'room.join',
+      payload: {
+        roomCode: created.roomId,
+        displayName: 'Mert',
+        avatarId: 'bolt',
+        rolePreference: 'no_preference',
+      },
+    });
+    await joinedPromise;
+
+    const startedPromise = waitForEvent(hostRoom, 'state.patch', (message) =>
+      message.payload.event === 'state.patch'
+      && message.payload.payload.patches.some((patch) => patch.path === 'turnMatch'),
+    );
+    hostRoom.send('event', { event: 'player.ready', payload: { ready: true } });
+    guestRoom.send('event', { event: 'player.ready', payload: { ready: true } });
+    await startedPromise;
+
+    const completedPromise = waitForEvent(hostRoom, 'game.completed');
+    guestRoom.send('event', {
+      event: 'match.forfeit',
+      payload: { reason: 'player_confirmed_exit' },
+    });
+    await completedPromise;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(store.matches.length, 1);
+    assert.deepEqual(
+      [...store.matches[0].authenticatedPlayerIds].sort(),
+      [hostAuth.player.id, guestAuth.player.id].sort(),
+    );
+
+    const historyResponse = await fetch(`${baseUrl}/v1/matches?limit=10`, {
+      headers: { authorization: `Bearer ${rotated.accessToken}` },
+    });
+    assert.equal(historyResponse.status, 200);
+    const history = await historyResponse.json() as { matches: MatchHistoryItem[] };
+    assert.equal(history.matches.length, 1);
+    assert.equal(history.matches[0].opponentDisplayName, 'Mert');
+  } finally {
+    await hostRoom?.leave();
+    await guestRoom?.leave();
+    await server.gracefullyShutdown(false);
+  }
+});
+
+test('access tokens reject tampering and expiration', () => {
+  const tokens = new TokenService('another-test-secret-with-thirty-two-bytes-minimum');
+  const issued = tokens.issue('player-id', undefined, 1_000_000);
+  assert.equal(tokens.verify(issued.accessToken, 1_000_001)?.sub, 'player-id');
+  assert.equal(tokens.verify(`${issued.accessToken}x`, 1_000_001), null);
+  assert.equal(tokens.verify(issued.accessToken, issued.accessTokenExpiresAt), null);
+  const runtime: BackendRuntime = {
+    store: null,
+    tokens,
+    allowLegacyPlayerIds: true,
+  };
+  assert.equal(
+    authenticateRoomClient(
+      runtime,
+      { token: '' },
+      '30642da1-4468-4a4a-a343-c213f595f113',
+    ),
+    false,
+  );
+  assert.deepEqual(
+    authenticateRoomClient(runtime, { token: '' }, 'legacy-player'),
+    { playerId: 'legacy-player', authenticated: false },
+  );
+});
