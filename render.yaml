@@ -4,7 +4,9 @@ services:
     runtime: docker
     plan: free
     region: frankfurt
+    repo: https://github.com/ahmetyags/duelcade-backend
     branch: main
+    autoDeployTrigger: checksPass
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
