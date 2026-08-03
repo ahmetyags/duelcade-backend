@@ -13,6 +13,7 @@ Bu proje şu anda:
 - idempotent XP ledger'ını, oyuncu seviyesini ve dört çekirdek mod ustalığını,
 - günlük görev ilerlemesini ve yalnızca görsel kozmetik envanterini,
 - açık rızaya bağlı, izin listeli ve 90 gün saklanan ürün analitiğini,
+- kimliği doğrulanmış kapalı testçilerden gelen, 180 gün saklanan yapılandırılmış geri bildirimi,
 - HTTP health endpoint'ini
 
 yönetir.
@@ -43,6 +44,7 @@ GET /v1/progression
 POST /v1/quests/:questKey/claim
 PATCH /v1/me/cosmetics
 POST /v1/analytics/events
+POST /v1/feedback
 ```
 
 Access tokenlar 15 dakika geçerlidir. Uzun ömürlü refresh tokenlar açık metin
@@ -55,6 +57,12 @@ eder ve olay adı/özelliklerini kapalı bir şemayla doğrular. İstemciden oyu
 kimliği alınmaz; kayıt token sahibine bağlanır. Oda kodu, isim, mesaj, reklam
 kimliği, serbest metin ve ham IP analitik kaydına yazılmaz. Kayıtlar yeni batch
 alındığında 90 günlük saklama süresine göre temizlenir.
+
+Geri bildirim endpoint'i geçerli access token ister ve gönderimleri istemci UUID'si
+ile idempotent işler. Kategori, 1–5 puan, en fazla 1000 karakter açıklama, ekran
+bağlamı, platform, uygulama/build sürümü ve dil saklanır. Oda kodu, reklam
+kimliği, cihaz kimliği ve ham IP kaydedilmez. Serbest metin alanında kişisel
+bilgi paylaşılmaması istemcide açıkça belirtilir; kayıtlar 180 gün tutulur.
 
 Render Blueprint aynı Frankfurt bölgesinde dış erişime kapalı
 `duelcade-postgres` veritabanını oluşturur ve servise internal `DATABASE_URL`

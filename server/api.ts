@@ -10,6 +10,7 @@ import {
 } from './progression';
 import type { BackendRuntime } from './runtime';
 import { AnalyticsBatchSchema } from './analytics';
+import { FeedbackSubmissionSchema } from './feedback';
 
 const DisplayNameSchema = z.string().trim().min(1).max(24);
 const GuestSchema = z.object({
@@ -347,6 +348,29 @@ export function configureApi(
         parsed.data.events,
       );
       response.status(202).json({ accepted });
+    },
+  );
+
+  router.post(
+    '/v1/feedback',
+    rateLimit(60 * 60 * 1000, 20),
+    async (request: Request, response: Response) => {
+      if (!runtime.store) {
+        sendUnavailable(response);
+        return;
+      }
+      const playerId = requirePlayer(runtime, request, response);
+      if (!playerId) return;
+      const parsed = FeedbackSubmissionSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: 'INVALID_FEEDBACK' });
+        return;
+      }
+      const accepted = await runtime.store.recordFeedback(
+        playerId,
+        parsed.data,
+      );
+      response.status(202).json({ id: parsed.data.id, accepted });
     },
   );
 

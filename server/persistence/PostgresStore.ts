@@ -33,6 +33,10 @@ import {
   clampAnalyticsTimestamp,
   type AnalyticsEvent,
 } from '../analytics';
+import {
+  FEEDBACK_RETENTION_DAYS,
+  type FeedbackSubmission,
+} from '../feedback';
 
 function rowPlayer(row: {
   id: string;
@@ -191,8 +195,8 @@ export class PostgresStore implements PersistenceStore {
         'SELECT 1 FROM schema_migrations WHERE id = $1',
         ['003_privacy_safe_analytics'],
       );
-      if (analyticsApplied.rowCount === 1) return;
-      await client.query(`
+      if (analyticsApplied.rowCount !== 1) {
+        await client.query(`
         CREATE TABLE analytics_events (
           id uuid PRIMARY KEY,
           player_id uuid NOT NULL REFERENCES players(id) ON DELETE CASCADE,
@@ -209,11 +213,42 @@ export class PostgresStore implements PersistenceStore {
           ON analytics_events(event_name, occurred_at DESC);
         CREATE INDEX analytics_events_player_time_idx
           ON analytics_events(player_id, occurred_at DESC);
-      `);
-      await client.query(
-        'INSERT INTO schema_migrations (id) VALUES ($1)',
-        ['003_privacy_safe_analytics'],
+        `);
+        await client.query(
+          'INSERT INTO schema_migrations (id) VALUES ($1)',
+          ['003_privacy_safe_analytics'],
+        );
+      }
+
+      const feedbackApplied = await client.query(
+        'SELECT 1 FROM schema_migrations WHERE id = $1',
+        ['004_closed_test_feedback'],
       );
+      if (feedbackApplied.rowCount !== 1) {
+        await client.query(`
+          CREATE TABLE feedback_submissions (
+            id uuid PRIMARY KEY,
+            player_id uuid NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+            category varchar(24) NOT NULL,
+            rating smallint NOT NULL CHECK (rating BETWEEN 1 AND 5),
+            message varchar(1000) NOT NULL,
+            screen varchar(24) NOT NULL,
+            platform varchar(12) NOT NULL,
+            app_version varchar(32) NOT NULL,
+            build_version varchar(32) NOT NULL,
+            locale varchar(5) NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now()
+          );
+          CREATE INDEX feedback_submissions_created_idx
+            ON feedback_submissions(created_at DESC);
+          CREATE INDEX feedback_submissions_category_created_idx
+            ON feedback_submissions(category, created_at DESC);
+        `);
+        await client.query(
+          'INSERT INTO schema_migrations (id) VALUES ($1)',
+          ['004_closed_test_feedback'],
+        );
+      }
     });
   }
 
@@ -538,6 +573,39 @@ export class PostgresStore implements PersistenceStore {
         WHERE created_at < now() - ($1 * interval '1 day')
       `, [ANALYTICS_RETENTION_DAYS]);
       return accepted;
+    });
+  }
+
+  async recordFeedback(
+    playerId: string,
+    submission: FeedbackSubmission,
+  ): Promise<boolean> {
+    return this.transaction(async (client) => {
+      const inserted = await client.query(`
+        INSERT INTO feedback_submissions (
+          id, player_id, category, rating, message, screen,
+          platform, app_version, build_version, locale
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id
+      `, [
+        submission.id,
+        playerId,
+        submission.category,
+        submission.rating,
+        submission.message,
+        submission.screen,
+        submission.platform,
+        submission.appVersion,
+        submission.buildVersion,
+        submission.locale,
+      ]);
+      await client.query(`
+        DELETE FROM feedback_submissions
+        WHERE created_at < now() - ($1 * interval '1 day')
+      `, [FEEDBACK_RETENTION_DAYS]);
+      return inserted.rowCount === 1;
     });
   }
 

@@ -26,6 +26,7 @@ import type {
   StoredPlayer,
 } from '../server/persistence/types';
 import type { AnalyticsEvent } from '../server/analytics';
+import type { FeedbackSubmission } from '../server/feedback';
 import type { BackendRuntime } from '../server/runtime';
 import { authenticateRoomClient } from '../server/runtime';
 import type { ServerMessage } from '../types/network';
@@ -51,6 +52,10 @@ class MemoryStore implements PersistenceStore {
     claimed: boolean;
   }>>();
   readonly analyticsEvents: { playerId: string; event: AnalyticsEvent }[] = [];
+  readonly feedbackSubmissions: {
+    playerId: string;
+    submission: FeedbackSubmission;
+  }[] = [];
 
   async initialize(): Promise<void> {}
   async close(): Promise<void> {}
@@ -249,6 +254,17 @@ class MemoryStore implements PersistenceStore {
   ): Promise<number> {
     for (const event of events) this.analyticsEvents.push({ playerId, event });
     return events.length;
+  }
+
+  async recordFeedback(
+    playerId: string,
+    submission: FeedbackSubmission,
+  ): Promise<boolean> {
+    if (this.feedbackSubmissions.some((entry) => entry.submission.id === submission.id)) {
+      return false;
+    }
+    this.feedbackSubmissions.push({ playerId, submission });
+    return true;
   }
 
   private ensureQuests(playerId: string): Map<QuestKey, {
@@ -533,6 +549,64 @@ test('secure guest identity rotates tokens, owns the room seat and records match
     });
     assert.equal(unsafeAnalytics.status, 400);
     assert.equal(store.analyticsEvents.length, 1);
+
+    const feedbackId = '9b00fc0c-88b9-44e7-93da-aef8ac355a89';
+    const feedbackBody = {
+      id: feedbackId,
+      category: 'tutorial',
+      rating: 4,
+      message: 'The first round explained the controls clearly.',
+      screen: 'results',
+      platform: 'android',
+      appVersion: '1.0.0',
+      buildVersion: '3',
+      locale: 'en',
+    };
+    const feedbackResponse = await fetch(`${baseUrl}/v1/feedback`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(feedbackBody),
+    });
+    assert.equal(feedbackResponse.status, 202);
+    assert.deepEqual(await feedbackResponse.json(), {
+      id: feedbackId,
+      accepted: true,
+    });
+    assert.equal(store.feedbackSubmissions[0].playerId, hostAuth.player.id);
+    assert.equal(store.feedbackSubmissions[0].submission.message, feedbackBody.message);
+
+    const duplicateFeedback = await fetch(`${baseUrl}/v1/feedback`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(feedbackBody),
+    });
+    assert.equal(duplicateFeedback.status, 202);
+    assert.deepEqual(await duplicateFeedback.json(), {
+      id: feedbackId,
+      accepted: false,
+    });
+    assert.equal(store.feedbackSubmissions.length, 1);
+
+    const unsafeFeedback = await fetch(`${baseUrl}/v1/feedback`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...feedbackBody,
+        id: '57f2b54e-6caf-41b1-b889-a1285665fcad',
+        message: 'bad\u0000message',
+      }),
+    });
+    assert.equal(unsafeFeedback.status, 400);
+    assert.equal(store.feedbackSubmissions.length, 1);
   } finally {
     await hostRoom?.leave();
     await guestRoom?.leave();

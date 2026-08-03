@@ -7,6 +7,7 @@ import type {
   QuestKey,
 } from '../progression';
 import type { AnalyticsEvent } from '../analytics';
+import type { FeedbackSubmission } from '../feedback';
 
 export interface StoredPlayer {
   id: string;
@@ -134,4 +135,8 @@ export interface PersistenceStore {
     playerId: string,
     events: readonly AnalyticsEvent[],
   ): Promise<number>;
+  recordFeedback(
+    playerId: string,
+    submission: FeedbackSubmission,
+  ): Promise<boolean>;
 }
