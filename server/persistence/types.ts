@@ -1,5 +1,11 @@
 import type { Difficulty, GameResult, Player } from '../../types/game';
 import type { TurnGameMode } from '../../types/turnGame';
+import type {
+  CoreMode,
+  CosmeticDefinition,
+  CosmeticType,
+  QuestKey,
+} from '../progression';
 
 export interface StoredPlayer {
   id: string;
@@ -48,7 +54,54 @@ export interface MatchHistoryItem {
   score: number;
   opponentDisplayName: string;
   opponentScore: number;
+  xpEarned: number;
 }
+
+export interface ModeMastery {
+  mode: CoreMode;
+  xp: number;
+  matchesPlayed: number;
+}
+
+export interface InventoryItem {
+  type: CosmeticType;
+  itemId: string;
+  unlockedAt: number;
+  source: string;
+}
+
+export interface DailyQuest {
+  key: QuestKey;
+  date: string;
+  progress: number;
+  target: number;
+  rewardXp: number;
+  claimed: boolean;
+}
+
+export interface PlayerProgression {
+  totalXp: number;
+  level: number;
+  currentLevelXp: number;
+  nextLevelXp: number;
+  equipped: {
+    avatar: string;
+    frame: string;
+    tableTheme: string;
+  };
+  mastery: ModeMastery[];
+  inventory: InventoryItem[];
+  catalog: readonly CosmeticDefinition[];
+  dailyQuests: DailyQuest[];
+}
+
+export type QuestClaimResult =
+  | { status: 'claimed'; progression: PlayerProgression }
+  | { status: 'not_found' | 'not_complete' | 'already_claimed' };
+
+export type EquipCosmeticResult =
+  | { status: 'equipped'; progression: PlayerProgression }
+  | { status: 'invalid_item' | 'not_owned' };
 
 export interface PersistenceStore {
   readonly available: boolean;
@@ -64,4 +117,16 @@ export interface PersistenceStore {
   getPlayer(playerId: string): Promise<StoredPlayer | null>;
   recordMatch(record: MatchRecord): Promise<void>;
   listMatches(playerId: string, limit: number): Promise<MatchHistoryItem[]>;
+  getProgression(playerId: string, date: string): Promise<PlayerProgression | null>;
+  claimDailyQuest(
+    playerId: string,
+    date: string,
+    questKey: QuestKey,
+  ): Promise<QuestClaimResult>;
+  equipCosmetic(
+    playerId: string,
+    type: CosmeticType,
+    itemId: string,
+    date: string,
+  ): Promise<EquipCosmeticResult>;
 }

@@ -3,6 +3,11 @@ import type { NextFunction, Request, Response, Router } from 'express';
 import { z } from 'zod';
 
 import { hashRefreshToken } from './auth/Tokens';
+import {
+  utcDateKey,
+  type CosmeticType,
+  type QuestKey,
+} from './progression';
 import type { BackendRuntime } from './runtime';
 
 const DisplayNameSchema = z.string().trim().min(1).max(24);
@@ -14,6 +19,11 @@ const RefreshSchema = z.object({
 });
 const UpdateProfileSchema = z.object({
   displayName: DisplayNameSchema,
+});
+const QuestKeySchema = z.enum(['play_duel', 'win_duel', 'win_rounds']);
+const EquipCosmeticSchema = z.object({
+  type: z.enum(['avatar', 'frame', 'table_theme']),
+  itemId: z.string().trim().min(1).max(40),
 });
 
 function bearerToken(request: Request): string | null {
@@ -229,6 +239,91 @@ export function configureApi(
       : 20;
     const matches = await runtime.store.listMatches(playerId, limit);
     response.json({ matches });
+  });
+
+  router.get('/v1/progression', async (
+    request: Request,
+    response: Response,
+  ) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const progression = await runtime.store.getProgression(
+      playerId,
+      utcDateKey(),
+    );
+    if (!progression) {
+      response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+      return;
+    }
+    response.json({ progression });
+  });
+
+  router.post('/v1/quests/:questKey/claim', async (
+    request: Request,
+    response: Response,
+  ) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const parsedKey = QuestKeySchema.safeParse(request.params.questKey);
+    if (!parsedKey.success) {
+      response.status(400).json({ error: 'INVALID_QUEST' });
+      return;
+    }
+    const result = await runtime.store.claimDailyQuest(
+      playerId,
+      utcDateKey(),
+      parsedKey.data as QuestKey,
+    );
+    if (result.status === 'claimed') {
+      response.json({ progression: result.progression });
+      return;
+    }
+    const status = result.status === 'not_found'
+      ? 404
+      : result.status === 'not_complete'
+        ? 409
+        : 409;
+    response.status(status).json({ error: result.status.toUpperCase() });
+  });
+
+  router.patch('/v1/me/cosmetics', async (
+    request: Request,
+    response: Response,
+  ) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const parsed = EquipCosmeticSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: 'INVALID_REQUEST' });
+      return;
+    }
+    const result = await runtime.store.equipCosmetic(
+      playerId,
+      parsed.data.type as CosmeticType,
+      parsed.data.itemId,
+      utcDateKey(),
+    );
+    if (result.status === 'equipped') {
+      response.json({ progression: result.progression });
+      return;
+    }
+    response.status(result.status === 'invalid_item' ? 400 : 403).json({
+      error: result.status === 'invalid_item'
+        ? 'INVALID_COSMETIC'
+        : 'COSMETIC_NOT_OWNED',
+    });
   });
 
   router.use((

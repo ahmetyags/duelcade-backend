@@ -4,11 +4,24 @@ import { Client, type Room } from '@colyseus/sdk';
 
 import { createGameServer } from '../server/app';
 import { TokenService } from '../server/auth/Tokens';
+import {
+  CORE_MODES,
+  COSMETIC_CATALOG,
+  DAILY_QUESTS,
+  levelFromXp,
+  levelProgress,
+  matchXpForPlayer,
+  type CosmeticType,
+  type QuestKey,
+} from '../server/progression';
 import type {
   CreateGuestSessionInput,
+  EquipCosmeticResult,
   MatchHistoryItem,
   MatchRecord,
   PersistenceStore,
+  PlayerProgression,
+  QuestClaimResult,
   RotateSessionInput,
   StoredPlayer,
 } from '../server/persistence/types';
@@ -25,6 +38,17 @@ class MemoryStore implements PersistenceStore {
     expiresAt: number;
   }>();
   readonly matches: MatchRecord[] = [];
+  readonly totalXp = new Map<string, number>();
+  readonly inventory = new Map<string, Set<string>>();
+  readonly equipped = new Map<string, {
+    avatar: string;
+    frame: string;
+    tableTheme: string;
+  }>();
+  readonly quests = new Map<string, Map<QuestKey, {
+    progress: number;
+    claimed: boolean;
+  }>>();
 
   async initialize(): Promise<void> {}
   async close(): Promise<void> {}
@@ -36,6 +60,17 @@ class MemoryStore implements PersistenceStore {
       createdAt: Date.now(),
     };
     this.players.set(player.id, player);
+    this.totalXp.set(player.id, 0);
+    this.inventory.set(player.id, new Set(
+      COSMETIC_CATALOG
+        .filter((item) => item.unlockLevel === 1)
+        .map((item) => `${item.type}:${item.itemId}`),
+    ));
+    this.equipped.set(player.id, {
+      avatar: 'sparkles',
+      frame: 'default',
+      tableTheme: 'classic',
+    });
     this.sessions.set(input.refreshTokenHash, {
       playerId: player.id,
       sessionId: input.sessionId,
@@ -77,7 +112,20 @@ class MemoryStore implements PersistenceStore {
   }
 
   async recordMatch(record: MatchRecord): Promise<void> {
-    if (!this.matches.some((match) => match.id === record.id)) this.matches.push(record);
+    if (this.matches.some((match) => match.id === record.id)) return;
+    this.matches.push(record);
+    for (const playerId of record.authenticatedPlayerIds) {
+      this.addXp(playerId, matchXpForPlayer(record, playerId));
+      const quests = this.ensureQuests(playerId);
+      quests.get('play_duel')!.progress = 1;
+      if (record.result.winnerPlayerId === playerId) {
+        quests.get('win_duel')!.progress = 1;
+      }
+      quests.get('win_rounds')!.progress = Math.min(
+        3,
+        record.result.playerScores?.[playerId] ?? 0,
+      );
+    }
   }
 
   async listMatches(playerId: string, limit: number): Promise<MatchHistoryItem[]> {
@@ -102,8 +150,120 @@ class MemoryStore implements PersistenceStore {
           opponentScore: opponent
             ? match.result.playerScores?.[opponent.id] ?? 0
             : 0,
+          xpEarned: matchXpForPlayer(match, playerId),
         };
       });
+  }
+
+  async getProgression(
+    playerId: string,
+    date: string,
+  ): Promise<PlayerProgression | null> {
+    if (!this.players.has(playerId)) return null;
+    const totalXp = this.totalXp.get(playerId) ?? 0;
+    const equipped = this.equipped.get(playerId)!;
+    const quests = this.ensureQuests(playerId);
+    return {
+      totalXp,
+      ...levelProgress(totalXp),
+      equipped,
+      mastery: CORE_MODES.map((mode) => ({
+        mode,
+        xp: 0,
+        matchesPlayed: this.matches.filter(
+          (match) => match.authenticatedPlayerIds.has(playerId)
+            && match.modeOrder.includes(mode),
+        ).length,
+      })),
+      inventory: [...(this.inventory.get(playerId) ?? [])].map((key) => {
+        const [type, itemId] = key.split(':') as [CosmeticType, string];
+        return {
+          type,
+          itemId,
+          unlockedAt: Date.now(),
+          source: 'test',
+        };
+      }),
+      catalog: COSMETIC_CATALOG,
+      dailyQuests: DAILY_QUESTS.map((definition) => ({
+        key: definition.key,
+        date,
+        progress: quests.get(definition.key)!.progress,
+        target: definition.target,
+        rewardXp: definition.rewardXp,
+        claimed: quests.get(definition.key)!.claimed,
+      })),
+    };
+  }
+
+  async claimDailyQuest(
+    playerId: string,
+    date: string,
+    questKey: QuestKey,
+  ): Promise<QuestClaimResult> {
+    const definition = DAILY_QUESTS.find((quest) => quest.key === questKey);
+    const state = this.ensureQuests(playerId).get(questKey);
+    if (!definition || !state) return { status: 'not_found' };
+    if (state.claimed) return { status: 'already_claimed' };
+    if (state.progress < definition.target) return { status: 'not_complete' };
+    state.claimed = true;
+    this.addXp(playerId, definition.rewardXp);
+    const progression = await this.getProgression(playerId, date);
+    return progression
+      ? { status: 'claimed', progression }
+      : { status: 'not_found' };
+  }
+
+  async equipCosmetic(
+    playerId: string,
+    type: CosmeticType,
+    itemId: string,
+    date: string,
+  ): Promise<EquipCosmeticResult> {
+    if (!COSMETIC_CATALOG.some((item) => item.type === type && item.itemId === itemId)) {
+      return { status: 'invalid_item' };
+    }
+    if (!this.inventory.get(playerId)?.has(`${type}:${itemId}`)) {
+      return { status: 'not_owned' };
+    }
+    const current = this.equipped.get(playerId)!;
+    this.equipped.set(playerId, {
+      ...current,
+      ...(type === 'avatar'
+        ? { avatar: itemId }
+        : type === 'frame'
+          ? { frame: itemId }
+          : { tableTheme: itemId }),
+    });
+    const progression = await this.getProgression(playerId, date);
+    return progression
+      ? { status: 'equipped', progression }
+      : { status: 'not_owned' };
+  }
+
+  private ensureQuests(playerId: string): Map<QuestKey, {
+    progress: number;
+    claimed: boolean;
+  }> {
+    let quests = this.quests.get(playerId);
+    if (!quests) {
+      quests = new Map(DAILY_QUESTS.map((quest) => [
+        quest.key,
+        { progress: 0, claimed: false },
+      ]));
+      this.quests.set(playerId, quests);
+    }
+    return quests;
+  }
+
+  private addXp(playerId: string, amount: number): void {
+    const totalXp = (this.totalXp.get(playerId) ?? 0) + amount;
+    this.totalXp.set(playerId, totalXp);
+    const inventory = this.inventory.get(playerId);
+    const level = levelFromXp(totalXp);
+    for (const item of COSMETIC_CATALOG) {
+      if (item.unlockLevel <= level) inventory?.add(`${item.type}:${item.itemId}`);
+    }
   }
 }
 
@@ -195,7 +355,7 @@ test('secure guest identity rotates tokens, owns the room seat and records match
       event: 'room.create',
       payload: {
         displayName: 'Ada',
-        avatarId: 'sparkles',
+        avatarId: 'crown',
         rolePreference: 'no_preference',
         difficulty: 'easy',
         matchDurationMinutes: 2,
@@ -208,6 +368,12 @@ test('secure guest identity rotates tokens, owns the room seat and records match
         ? created.payload.payload.room.hostId
         : null,
       hostAuth.player.id,
+    );
+    assert.equal(
+      created.payload.event === 'room.snapshot'
+        ? created.payload.payload.room.players[0]?.avatarId
+        : null,
+      'sparkles',
     );
 
     const guestClient = new Client(baseUrl);
@@ -256,6 +422,56 @@ test('secure guest identity rotates tokens, owns the room seat and records match
     const history = await historyResponse.json() as { matches: MatchHistoryItem[] };
     assert.equal(history.matches.length, 1);
     assert.equal(history.matches[0].opponentDisplayName, 'Mert');
+    assert.equal(history.matches[0].xpEarned, 55);
+
+    const progressionResponse = await fetch(`${baseUrl}/v1/progression`, {
+      headers: { authorization: `Bearer ${rotated.accessToken}` },
+    });
+    assert.equal(progressionResponse.status, 200);
+    const initialProgression = await progressionResponse.json() as {
+      progression: PlayerProgression;
+    };
+    assert.equal(initialProgression.progression.totalXp, 55);
+    assert.equal(
+      initialProgression.progression.dailyQuests
+        .find((quest) => quest.key === 'play_duel')?.progress,
+      1,
+    );
+
+    for (const questKey of ['play_duel', 'win_duel'] as const) {
+      const claimResponse = await fetch(
+        `${baseUrl}/v1/quests/${questKey}/claim`,
+        {
+          method: 'POST',
+          headers: { authorization: `Bearer ${rotated.accessToken}` },
+        },
+      );
+      assert.equal(claimResponse.status, 200);
+    }
+    const incompleteClaim = await fetch(
+      `${baseUrl}/v1/quests/win_rounds/claim`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${rotated.accessToken}` },
+      },
+    );
+    assert.equal(incompleteClaim.status, 409);
+
+    const equipResponse = await fetch(`${baseUrl}/v1/me/cosmetics`, {
+      method: 'PATCH',
+      headers: {
+        authorization: `Bearer ${rotated.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ type: 'avatar', itemId: 'bot' }),
+    });
+    assert.equal(equipResponse.status, 200);
+    const equipped = await equipResponse.json() as {
+      progression: PlayerProgression;
+    };
+    assert.equal(equipped.progression.totalXp, 155);
+    assert.equal(equipped.progression.level, 2);
+    assert.equal(equipped.progression.equipped.avatar, 'bot');
   } finally {
     await hostRoom?.leave();
     await guestRoom?.leave();

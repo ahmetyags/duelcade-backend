@@ -3,10 +3,12 @@ import type { AuthContext } from 'colyseus';
 import { TokenService } from './auth/Tokens';
 import { PostgresStore } from './persistence/PostgresStore';
 import type { MatchRecord, PersistenceStore } from './persistence/types';
+import type { PlayerAvatarId } from '../types/profile';
 
 export interface RoomAuthData {
   playerId: string;
   authenticated: boolean;
+  avatarId?: PlayerAvatarId;
 }
 
 export interface BackendRuntime {

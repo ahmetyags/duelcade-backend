@@ -46,6 +46,7 @@ import {
   type BackendRuntime,
   type RoomAuthData,
 } from './runtime';
+import { utcDateKey } from './progression';
 
 const DEFAULT_MATCH_DURATION_MINUTES = 5;
 const RECONNECT_GRACE_SECONDS = 60;
@@ -192,6 +193,7 @@ interface ClientData {
   playerId: string;
   registered: boolean;
   authenticated: boolean;
+  authoritativeAvatarId?: PlayerAvatarId;
 }
 
 interface PlayerPosition {
@@ -331,18 +333,31 @@ export class DuelcadeRoom extends Room {
     this.clock.setInterval(() => this.tickGameTimer(), 1000);
   }
 
-  onAuth(
+  async onAuth(
     _client: EscapeClient,
     options: unknown,
     context: AuthContext,
-  ): RoomAuthData | false {
+  ): Promise<RoomAuthData | false> {
     const parsed = JoinOptionsSchema.safeParse(options);
     if (!parsed.success) return false;
-    return authenticateRoomClient(
-      (this.constructor as typeof DuelcadeRoom).runtime,
+    const runtime = (this.constructor as typeof DuelcadeRoom).runtime;
+    const auth = authenticateRoomClient(
+      runtime,
       context,
       parsed.data.playerId,
     );
+    if (!auth || !auth.authenticated || !runtime.store) return auth;
+    const progression = await runtime.store.getProgression(
+      auth.playerId,
+      utcDateKey(),
+    );
+    const avatarId = progression?.equipped.avatar;
+    return {
+      ...auth,
+      avatarId: PlayerAvatarIdSchema.safeParse(avatarId).success
+        ? avatarId as PlayerAvatarId
+        : undefined,
+    };
   }
 
   onJoin(client: EscapeClient, options: unknown, auth?: RoomAuthData): void {
@@ -359,6 +374,7 @@ export class DuelcadeRoom extends Room {
       playerId: auth.playerId,
       registered: false,
       authenticated: auth.authenticated,
+      authoritativeAvatarId: auth.avatarId,
     };
     this.clock.setTimeout(() => {
       if (!client.userData?.registered) {
@@ -613,7 +629,7 @@ export class DuelcadeRoom extends Room {
     const player = this.createPlayer(
       clientData.playerId,
       payload.displayName,
-      payload.avatarId,
+      clientData.authoritativeAvatarId ?? payload.avatarId,
       payload.rolePreference,
       true,
     );
@@ -667,7 +683,7 @@ export class DuelcadeRoom extends Room {
     const player = this.createPlayer(
       clientData.playerId,
       payload.displayName,
-      payload.avatarId,
+      clientData.authoritativeAvatarId ?? payload.avatarId,
       payload.rolePreference,
       false,
     );

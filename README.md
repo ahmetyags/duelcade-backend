@@ -10,6 +10,8 @@ Bu proje şu anda:
 - oda koltuğu ve oyuncu kimliği korumalarını,
 - sunucu üretimli anonim oyuncu kimliğini ve döndürülen oturum tokenlarını,
 - PostgreSQL üzerinde kalıcı maç geçmişini,
+- idempotent XP ledger'ını, oyuncu seviyesini ve dört çekirdek mod ustalığını,
+- günlük görev ilerlemesini ve yalnızca görsel kozmetik envanterini,
 - HTTP health endpoint'ini
 
 yönetir.
@@ -36,6 +38,9 @@ POST /v1/auth/refresh
 POST /v1/auth/logout
 GET|PATCH /v1/me
 GET /v1/matches
+GET /v1/progression
+POST /v1/quests/:questKey/claim
+PATCH /v1/me/cosmetics
 ```
 
 Access tokenlar 15 dakika geçerlidir. Uzun ömürlü refresh tokenlar açık metin
@@ -57,7 +62,8 @@ npm run verify
 
 Test paketi oyun motorunu, iki istemcili gerçek Colyseus maçını, token
 döndürmeyi, sahte istemci kimliğinin reddini, kalıcı maç kaydını, kimlik
-çakışmasını ve kayıt olmadan oda koltuğu işgalini kapsar.
+çakışmasını, tek-seferlik XP ödülünü, görev talebini, kozmetik sahipliğini ve
+kayıt olmadan oda koltuğu işgalini kapsar.
 
 ## Mobil uygulama bağlantısı
 
