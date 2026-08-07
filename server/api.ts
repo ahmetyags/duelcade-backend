@@ -28,6 +28,91 @@ const EquipCosmeticSchema = z.object({
   itemId: z.string().trim().min(1).max(40),
 });
 
+type LeaderboardSummary = {
+  globalRank: number | null;
+  totalScore: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+};
+
+type CompetitiveSummary = {
+  seasonRating: number;
+  league: 'Bronze' | 'Silver' | 'Gold' | 'Platinum' | 'Diamond' | 'Master' | 'Grandmaster';
+  season: string;
+  results: {
+    wins: number;
+    losses: number;
+    draws: number;
+  };
+  winRate: number;
+};
+
+function winRate(wins: number, losses: number, draws = 0): number {
+  const played = wins + losses + draws;
+  return played === 0 ? 0 : Math.round((wins / played) * 100);
+}
+
+function leagueForRating(rating: number): CompetitiveSummary['league'] {
+  if (rating >= 2400) return 'Grandmaster';
+  if (rating >= 2100) return 'Master';
+  if (rating >= 1850) return 'Diamond';
+  if (rating >= 1650) return 'Platinum';
+  if (rating >= 1450) return 'Gold';
+  if (rating >= 1250) return 'Silver';
+  return 'Bronze';
+}
+
+function currentSeason(now = Date.now()) {
+  const start = new Date(now);
+  start.setUTCMonth(0, 1);
+  start.setUTCHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setUTCFullYear(start.getUTCFullYear() + 1);
+  return {
+    id: `${start.getUTCFullYear()}-s1`,
+    name: 'Season 1',
+    startsAt: start.getTime(),
+    endsAt: end.getTime(),
+  };
+}
+
+function summarizeLeaderboard(
+  playerId: string,
+  matches: Awaited<ReturnType<NonNullable<BackendRuntime['store']>['listMatches']>>,
+): LeaderboardSummary {
+  const wins = matches.filter((match) => match.winnerPlayerId === playerId).length;
+  const losses = matches.filter((match) =>
+    match.winnerPlayerId !== null && match.winnerPlayerId !== playerId
+  ).length;
+  return {
+    globalRank: matches.length > 0 ? 1 : null,
+    totalScore: matches.reduce((total, match) => total + match.score, 0),
+    wins,
+    losses,
+    winRate: winRate(wins, losses),
+  };
+}
+
+function summarizeCompetitive(
+  playerId: string,
+  matches: Awaited<ReturnType<NonNullable<BackendRuntime['store']>['listMatches']>>,
+): CompetitiveSummary {
+  const wins = matches.filter((match) => match.winnerPlayerId === playerId).length;
+  const losses = matches.filter((match) =>
+    match.winnerPlayerId !== null && match.winnerPlayerId !== playerId
+  ).length;
+  const draws = matches.filter((match) => match.winnerPlayerId === null).length;
+  const rating = Math.max(800, 1200 + wins * 28 + draws * 6 - losses * 18);
+  return {
+    seasonRating: rating,
+    league: leagueForRating(rating),
+    season: currentSeason().name,
+    results: { wins, losses, draws },
+    winRate: winRate(wins, losses, draws),
+  };
+}
+
 function bearerToken(request: Request): string | null {
   const header = request.headers.authorization;
   if (!header?.startsWith('Bearer ')) return null;
@@ -226,6 +311,75 @@ export function configureApi(
       return;
     }
     response.json({ player });
+  });
+
+  router.get('/v1/profile', async (request: Request, response: Response) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const player = await runtime.store.getPlayer(playerId);
+    if (!player) {
+      response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+      return;
+    }
+    const matches = await runtime.store.listMatches(playerId, 50);
+    response.json({
+      player,
+      leaderboard: summarizeLeaderboard(playerId, matches),
+      competitive: summarizeCompetitive(playerId, matches),
+      season: currentSeason(),
+    });
+  });
+
+  router.patch('/v1/profile', async (request: Request, response: Response) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const parsed = UpdateProfileSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: 'INVALID_REQUEST' });
+      return;
+    }
+    const player = await runtime.store.updatePlayerName(playerId, parsed.data.displayName);
+    if (!player) {
+      response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+      return;
+    }
+    response.json({ player });
+  });
+
+  router.get('/v1/leaderboard', async (request: Request, response: Response) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const matches = await runtime.store.listMatches(playerId, 50);
+    response.json({ leaderboard: summarizeLeaderboard(playerId, matches) });
+  });
+
+  router.get('/v1/competitive', async (request: Request, response: Response) => {
+    if (!runtime.store) {
+      sendUnavailable(response);
+      return;
+    }
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    const matches = await runtime.store.listMatches(playerId, 50);
+    response.json({ competitive: summarizeCompetitive(playerId, matches) });
+  });
+
+  router.get('/v1/season', (request: Request, response: Response) => {
+    const playerId = requirePlayer(runtime, request, response);
+    if (!playerId) return;
+    response.json({ season: currentSeason() });
   });
 
   router.get('/v1/matches', async (request: Request, response: Response) => {
