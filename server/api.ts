@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response, Router } from 'express';
 import { z } from 'zod';
 
-import { hashRefreshToken } from './auth/Tokens';
+import { hashRefreshToken, type IssuedTokens } from './auth/Tokens';
+import { hashPassword, verifyPassword } from './auth/Password';
+import {
+  exchangeOAuthCode,
+  oauthAvailable,
+  oauthAuthorizationUrl,
+  randomOAuthCode,
+  type OAuthProvider,
+} from './auth/OAuth';
+import type { StoredPlayer } from './persistence/types';
 import {
   utcDateKey,
   type CosmeticType,
@@ -19,6 +28,20 @@ const GuestSchema = z.object({
 const RefreshSchema = z.object({
   refreshToken: z.string().min(50).max(256),
 });
+const EmailLoginSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  password: z.string().min(8).max(128),
+});
+const EmailRegisterSchema = EmailLoginSchema.extend({
+  displayName: DisplayNameSchema,
+  password: z.string().min(8).max(128)
+    .regex(/[a-z]/, 'PASSWORD_LOWERCASE_REQUIRED')
+    .regex(/[A-Z]/, 'PASSWORD_UPPERCASE_REQUIRED')
+    .regex(/[0-9]/, 'PASSWORD_NUMBER_REQUIRED'),
+});
+const OAuthProviderSchema = z.enum(['google', 'facebook', 'github']);
+const OAuthStartSchema = z.object({ redirectUri: z.string().url().max(500) });
+const OAuthExchangeSchema = z.object({ code: z.string().min(40).max(100) });
 const UpdateProfileSchema = z.object({
   displayName: DisplayNameSchema,
 });
@@ -92,6 +115,35 @@ function summarizeLeaderboard(
     losses,
     winRate: winRate(wins, losses),
   };
+}
+
+function sessionResponse(player: StoredPlayer, issued: IssuedTokens) {
+  return {
+    player,
+    accessToken: issued.accessToken,
+    accessTokenExpiresAt: issued.accessTokenExpiresAt,
+    refreshToken: issued.refreshToken,
+    refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+  };
+}
+
+function publicBaseUrl(request: Request): string {
+  return process.env.PUBLIC_BASE_URL?.replace(/\/+$/, '')
+    ?? `${request.protocol}://${request.get('host')}`;
+}
+
+function safeAppRedirect(value: string, allowedOrigins: ReadonlySet<string>): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'duelcade:' && url.hostname === 'auth' && url.pathname === '/callback') {
+      return true;
+    }
+    return (url.protocol === 'https:' || url.hostname === 'localhost')
+      && allowedOrigins.has(url.origin)
+      && url.pathname === '/auth/callback';
+  } catch {
+    return false;
+  }
 }
 
 function summarizeCompetitive(
@@ -177,6 +229,15 @@ export function configureApi(
   runtime: BackendRuntime,
   allowedOrigins: ReadonlySet<string>,
 ): void {
+  const oauthStates = new Map<string, {
+    provider: OAuthProvider;
+    redirectUri: string;
+    expiresAt: number;
+  }>();
+  const oauthTransfers = new Map<string, {
+    session: ReturnType<typeof sessionResponse>;
+    expiresAt: number;
+  }>();
   router.use('/v1', (request: Request, response: Response, next: NextFunction) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -225,6 +286,179 @@ export function configureApi(
     });
     },
   );
+
+  router.get('/v1/auth/providers', (_request: Request, response: Response) => {
+    response.json({
+      providers: {
+        email: Boolean(runtime.store?.createEmailAccount && runtime.store.findEmailAccount),
+        google: oauthAvailable('google'),
+        facebook: oauthAvailable('facebook'),
+        github: oauthAvailable('github'),
+      },
+    });
+  });
+
+  router.post(
+    '/v1/auth/email/register',
+    rateLimit(60 * 60 * 1000, 10),
+    async (request: Request, response: Response) => {
+      if (!runtime.store?.createEmailAccount || !runtime.tokens) {
+        sendUnavailable(response);
+        return;
+      }
+      const parsed = EmailRegisterSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: 'INVALID_REQUEST' });
+        return;
+      }
+      const playerId = randomUUID();
+      const issued = runtime.tokens.issue(playerId);
+      const player = await runtime.store.createEmailAccount({
+        playerId,
+        displayName: parsed.data.displayName,
+        provider: 'email',
+        providerSubject: parsed.data.email,
+        email: parsed.data.email,
+        passwordHash: await hashPassword(parsed.data.password),
+        sessionId: issued.sessionId,
+        refreshTokenHash: issued.refreshTokenHash,
+        refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+      });
+      if (!player) {
+        response.status(409).json({ error: 'EMAIL_ALREADY_REGISTERED' });
+        return;
+      }
+      response.status(201).json(sessionResponse(player, issued));
+    },
+  );
+
+  router.post(
+    '/v1/auth/email/login',
+    rateLimit(15 * 60 * 1000, 20),
+    async (request: Request, response: Response) => {
+      if (!runtime.store?.findEmailAccount || !runtime.store.createSessionForPlayer || !runtime.tokens) {
+        sendUnavailable(response);
+        return;
+      }
+      const parsed = EmailLoginSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: 'INVALID_REQUEST' });
+        return;
+      }
+      const credential = await runtime.store.findEmailAccount(parsed.data.email);
+      if (!credential || !await verifyPassword(parsed.data.password, credential.passwordHash)) {
+        response.status(401).json({ error: 'INVALID_EMAIL_OR_PASSWORD' });
+        return;
+      }
+      const issued = runtime.tokens.issue(credential.player.id);
+      const player = await runtime.store.createSessionForPlayer({
+        playerId: credential.player.id,
+        sessionId: issued.sessionId,
+        refreshTokenHash: issued.refreshTokenHash,
+        refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+      });
+      if (!player) {
+        response.status(401).json({ error: 'INVALID_EMAIL_OR_PASSWORD' });
+        return;
+      }
+      response.json(sessionResponse(player, issued));
+    },
+  );
+
+  router.get('/v1/auth/oauth/:provider/start', (request: Request, response: Response) => {
+    const provider = OAuthProviderSchema.safeParse(request.params.provider);
+    const query = OAuthStartSchema.safeParse(request.query);
+    if (!provider.success || !query.success || !safeAppRedirect(query.data.redirectUri, allowedOrigins)) {
+      response.status(400).json({ error: 'INVALID_OAUTH_REQUEST' });
+      return;
+    }
+    const state = randomOAuthCode();
+    const callbackUrl = `${publicBaseUrl(request)}/v1/auth/oauth/${provider.data}/callback`;
+    const authorizationUrl = oauthAuthorizationUrl(provider.data, callbackUrl, state);
+    if (!authorizationUrl) {
+      response.status(503).json({ error: 'OAUTH_PROVIDER_NOT_CONFIGURED' });
+      return;
+    }
+    oauthStates.set(state, {
+      provider: provider.data,
+      redirectUri: query.data.redirectUri,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    });
+    response.redirect(302, authorizationUrl);
+  });
+
+  router.get('/v1/auth/oauth/:provider/callback', async (request: Request, response: Response) => {
+    const provider = OAuthProviderSchema.safeParse(request.params.provider);
+    const code = typeof request.query.code === 'string' ? request.query.code : null;
+    const stateKey = typeof request.query.state === 'string' ? request.query.state : '';
+    const state = oauthStates.get(stateKey);
+    oauthStates.delete(stateKey);
+    if (!provider.success || !state || state.provider !== provider.data || state.expiresAt <= Date.now()) {
+      response.status(400).send('OAuth request expired or invalid. Return to Duelcade and try again.');
+      return;
+    }
+    if (!code || !runtime.store?.upsertOAuthAccount || !runtime.tokens) {
+      const redirect = new URL(state.redirectUri);
+      redirect.searchParams.set('error', typeof request.query.error === 'string'
+        ? request.query.error.slice(0, 80)
+        : 'OAUTH_FAILED');
+      response.redirect(302, redirect.toString());
+      return;
+    }
+    try {
+      const profile = await exchangeOAuthCode(
+        provider.data,
+        code,
+        `${publicBaseUrl(request)}/v1/auth/oauth/${provider.data}/callback`,
+      );
+      const playerId = randomUUID();
+      const issued = runtime.tokens.issue(playerId);
+      const player = await runtime.store.upsertOAuthAccount({
+        playerId,
+        displayName: profile.displayName.trim().slice(0, 24) || 'Duelcade Player',
+        provider: profile.provider,
+        providerSubject: profile.subject,
+        email: profile.email,
+        passwordHash: null,
+        sessionId: issued.sessionId,
+        refreshTokenHash: issued.refreshTokenHash,
+        refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+      });
+      // An existing identity keeps its original player id, so issue the access
+      // token again for that authoritative id while preserving the stored session.
+      const finalIssued = player.id === playerId
+        ? issued
+        : { ...issued, ...runtime.tokens.issueAccess(player.id, issued.sessionId) };
+      const transferCode = randomOAuthCode();
+      oauthTransfers.set(transferCode, {
+        session: sessionResponse(player, finalIssued),
+        expiresAt: Date.now() + 2 * 60 * 1000,
+      });
+      const redirect = new URL(state.redirectUri);
+      redirect.searchParams.set('code', transferCode);
+      response.redirect(302, redirect.toString());
+    } catch (error) {
+      console.error('[oauth] Callback failed', { provider: provider.data, error });
+      const redirect = new URL(state.redirectUri);
+      redirect.searchParams.set('error', 'OAUTH_FAILED');
+      response.redirect(302, redirect.toString());
+    }
+  });
+
+  router.post('/v1/auth/oauth/exchange', async (request: Request, response: Response) => {
+    const parsed = OAuthExchangeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({ error: 'INVALID_REQUEST' });
+      return;
+    }
+    const transfer = oauthTransfers.get(parsed.data.code);
+    oauthTransfers.delete(parsed.data.code);
+    if (!transfer || transfer.expiresAt <= Date.now()) {
+      response.status(401).json({ error: 'INVALID_OAUTH_CODE' });
+      return;
+    }
+    response.json(transfer.session);
+  });
 
   router.post(
     '/v1/auth/refresh',
@@ -326,9 +560,17 @@ export function configureApi(
       return;
     }
     const matches = await runtime.store.listMatches(playerId, 50);
+    const entries = await runtime.store.listLeaderboard?.(100) ?? [];
+    const ownEntry = entries.find((entry) => entry.playerId === playerId);
     response.json({
       player,
-      leaderboard: summarizeLeaderboard(playerId, matches),
+      leaderboard: ownEntry ? {
+        globalRank: ownEntry.rank,
+        totalScore: ownEntry.totalScore,
+        wins: ownEntry.wins,
+        losses: ownEntry.losses,
+        winRate: ownEntry.winRate,
+      } : summarizeLeaderboard(playerId, matches),
       competitive: summarizeCompetitive(playerId, matches),
       season: currentSeason(),
     });
@@ -361,8 +603,19 @@ export function configureApi(
     }
     const playerId = requirePlayer(runtime, request, response);
     if (!playerId) return;
-    const matches = await runtime.store.listMatches(playerId, 50);
-    response.json({ leaderboard: summarizeLeaderboard(playerId, matches) });
+    const entries = await runtime.store.listLeaderboard?.(100) ?? [];
+    const ownEntry = entries.find((entry) => entry.playerId === playerId);
+    const matches = ownEntry ? [] : await runtime.store.listMatches(playerId, 50);
+    response.json({
+      leaderboard: ownEntry ? {
+        globalRank: ownEntry.rank,
+        totalScore: ownEntry.totalScore,
+        wins: ownEntry.wins,
+        losses: ownEntry.losses,
+        winRate: ownEntry.winRate,
+      } : summarizeLeaderboard(playerId, matches),
+      entries,
+    });
   });
 
   router.get('/v1/competitive', async (request: Request, response: Response) => {

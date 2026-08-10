@@ -15,12 +15,15 @@ import {
   type QuestKey,
 } from '../progression';
 import type {
+  AccountCredential,
+  CreateAccountSessionInput,
   CreateGuestSessionInput,
   DailyQuest,
   EquipCosmeticResult,
   InventoryItem,
   MatchHistoryItem,
   MatchRecord,
+  LeaderboardEntry,
   ModeMastery,
   PersistenceStore,
   PlayerProgression,
@@ -249,6 +252,32 @@ export class PostgresStore implements PersistenceStore {
           ['004_closed_test_feedback'],
         );
       }
+
+      const accountApplied = await client.query(
+        'SELECT 1 FROM schema_migrations WHERE id = $1',
+        ['005_account_identities'],
+      );
+      if (accountApplied.rowCount !== 1) {
+        await client.query(`
+          CREATE TABLE player_identities (
+            provider varchar(16) NOT NULL,
+            provider_subject varchar(320) NOT NULL,
+            player_id uuid NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+            email varchar(320),
+            password_hash varchar(256),
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (provider, provider_subject)
+          );
+          CREATE INDEX player_identities_email_idx
+            ON player_identities(lower(email)) WHERE email IS NOT NULL;
+          CREATE INDEX player_identities_player_idx ON player_identities(player_id);
+        `);
+        await client.query(
+          'INSERT INTO schema_migrations (id) VALUES ($1)',
+          ['005_account_identities'],
+        );
+      }
     });
   }
 
@@ -275,6 +304,151 @@ export class PostgresStore implements PersistenceStore {
       await this.grantUnlockedCosmetics(client, input.playerId, 1);
       return rowPlayer(player.rows[0]);
     });
+  }
+
+  async createEmailAccount(input: CreateAccountSessionInput): Promise<StoredPlayer | null> {
+    return this.transaction(async (client) => {
+      const existing = await client.query(
+        'SELECT 1 FROM player_identities WHERE lower(email) = lower($1)',
+        [input.email],
+      );
+      if (existing.rowCount) return null;
+      const player = await this.insertAccountPlayer(client, input);
+      await client.query(`
+        INSERT INTO player_identities (
+          provider, provider_subject, player_id, email, password_hash
+        ) VALUES ('email', $1, $2, $3, $4)
+      `, [input.providerSubject, input.playerId, input.email, input.passwordHash]);
+      return player;
+    });
+  }
+
+  async findEmailAccount(email: string): Promise<AccountCredential | null> {
+    const result = await this.pool.query(`
+      SELECT player.id, player.display_name, player.created_at, identity.password_hash
+      FROM player_identities AS identity
+      JOIN players AS player ON player.id = identity.player_id
+      WHERE identity.provider = 'email' AND lower(identity.email) = lower($1)
+    `, [email]);
+    if (result.rowCount !== 1 || !result.rows[0].password_hash) return null;
+    return { player: rowPlayer(result.rows[0]), passwordHash: result.rows[0].password_hash };
+  }
+
+  async createSessionForPlayer(
+    input: Pick<CreateAccountSessionInput, 'playerId' | 'sessionId' | 'refreshTokenHash' | 'refreshTokenExpiresAt'>,
+  ): Promise<StoredPlayer | null> {
+    return this.transaction(async (client) => {
+      const player = await client.query(`
+        UPDATE players SET last_seen_at = now() WHERE id = $1
+        RETURNING id, display_name, created_at
+      `, [input.playerId]);
+      if (player.rowCount !== 1) return null;
+      await this.insertSession(client, input);
+      return rowPlayer(player.rows[0]);
+    });
+  }
+
+  async upsertOAuthAccount(input: CreateAccountSessionInput): Promise<StoredPlayer> {
+    return this.transaction(async (client) => {
+      const existing = await client.query(`
+        SELECT player.id, player.display_name, player.created_at
+        FROM player_identities AS identity
+        JOIN players AS player ON player.id = identity.player_id
+        WHERE identity.provider = $1 AND identity.provider_subject = $2
+        FOR UPDATE
+      `, [input.provider, input.providerSubject]);
+      if (existing.rowCount === 1) {
+        await client.query(`
+          UPDATE player_identities SET email = COALESCE($3, email), updated_at = now()
+          WHERE provider = $1 AND provider_subject = $2
+        `, [input.provider, input.providerSubject, input.email]);
+        await this.insertSession(client, { ...input, playerId: existing.rows[0].id });
+        return rowPlayer(existing.rows[0]);
+      }
+      if (input.email) {
+        const linked = await client.query(`
+          SELECT player.id, player.display_name, player.created_at
+          FROM player_identities AS identity
+          JOIN players AS player ON player.id = identity.player_id
+          WHERE lower(identity.email) = lower($1)
+          LIMIT 1
+          FOR UPDATE OF identity
+        `, [input.email]);
+        if (linked.rowCount === 1) {
+          await client.query(`
+            INSERT INTO player_identities (provider, provider_subject, player_id, email)
+            VALUES ($1, $2, $3, $4)
+          `, [input.provider, input.providerSubject, linked.rows[0].id, input.email]);
+          await this.insertSession(client, { ...input, playerId: linked.rows[0].id });
+          return rowPlayer(linked.rows[0]);
+        }
+      }
+      const player = await this.insertAccountPlayer(client, input);
+      await client.query(`
+        INSERT INTO player_identities (provider, provider_subject, player_id, email)
+        VALUES ($1, $2, $3, $4)
+      `, [input.provider, input.providerSubject, input.playerId, input.email]);
+      return player;
+    });
+  }
+
+  async listLeaderboard(limit: number): Promise<LeaderboardEntry[]> {
+    const result = await this.pool.query(`
+      WITH stats AS (
+        SELECT player.id AS player_id, player.display_name,
+          COALESCE(SUM(mp.score), 0)::int AS total_score,
+          COUNT(*) FILTER (WHERE match.winner_player_id = player.id)::int AS wins,
+          COUNT(*) FILTER (WHERE match.winner_player_id IS NOT NULL AND match.winner_player_id <> player.id)::int AS losses,
+          COUNT(*) FILTER (WHERE match.winner_player_id IS NULL)::int AS draws
+        FROM players AS player
+        JOIN player_identities AS identity ON identity.player_id = player.id
+        LEFT JOIN match_players AS mp ON mp.player_id = player.id
+        LEFT JOIN matches AS match ON match.id = mp.match_id
+        GROUP BY player.id, player.display_name
+      )
+      SELECT *, row_number() OVER (
+        ORDER BY wins DESC, total_score DESC, losses ASC, display_name ASC
+      )::int AS rank
+      FROM stats
+      ORDER BY rank
+      LIMIT $1
+    `, [limit]);
+    return result.rows.map((row) => {
+      const played = row.wins + row.losses + row.draws;
+      return {
+        rank: row.rank,
+        playerId: row.player_id,
+        displayName: row.display_name,
+        totalScore: row.total_score,
+        wins: row.wins,
+        losses: row.losses,
+        draws: row.draws,
+        winRate: played === 0 ? 0 : Math.round((row.wins / played) * 100),
+      };
+    });
+  }
+
+  private async insertAccountPlayer(
+    client: PoolClient,
+    input: CreateAccountSessionInput,
+  ): Promise<StoredPlayer> {
+    const result = await client.query(`
+      INSERT INTO players (id, display_name) VALUES ($1, $2)
+      RETURNING id, display_name, created_at
+    `, [input.playerId, input.displayName]);
+    await this.insertSession(client, input);
+    await this.grantUnlockedCosmetics(client, input.playerId, 1);
+    return rowPlayer(result.rows[0]);
+  }
+
+  private async insertSession(
+    client: PoolClient,
+    input: Pick<CreateAccountSessionInput, 'playerId' | 'sessionId' | 'refreshTokenHash' | 'refreshTokenExpiresAt'>,
+  ): Promise<void> {
+    await client.query(`
+      INSERT INTO player_sessions (id, player_id, refresh_token_hash, expires_at)
+      VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))
+    `, [input.sessionId, input.playerId, input.refreshTokenHash, input.refreshTokenExpiresAt]);
   }
 
   async rotateSession(input: RotateSessionInput): Promise<{

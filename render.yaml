@@ -23,6 +23,20 @@ services:
         value: "true"
       - key: ALLOWED_ORIGINS
         value: https://duelcade.expo.app
+      - key: PUBLIC_BASE_URL
+        value: https://duelcade-game-server.onrender.com
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: FACEBOOK_CLIENT_ID
+        sync: false
+      - key: FACEBOOK_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
 
 databases:
   - name: duelcade-postgres

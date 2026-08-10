@@ -29,7 +29,7 @@ import type { AnalyticsEvent } from '../server/analytics';
 import type { FeedbackSubmission } from '../server/feedback';
 import type { BackendRuntime } from '../server/runtime';
 import { authenticateRoomClient } from '../server/runtime';
-import type { ServerMessage } from '../types/network';
+import { PROTOCOL_VERSION, type ServerMessage } from '../types/network';
 
 class MemoryStore implements PersistenceStore {
   readonly available = true;
@@ -374,7 +374,7 @@ test('secure guest identity rotates tokens, owns the room seat and records match
     hostClient.auth.token = rotated.accessToken;
     hostRoom = await hostClient.create('duelcade', {
       playerId: 'spoofed-host-id',
-      protocolVersion: '1.9.0',
+      protocolVersion: PROTOCOL_VERSION,
     });
     const createdPromise = waitForEvent(hostRoom, 'room.snapshot');
     hostRoom.send('event', {
@@ -406,7 +406,7 @@ test('secure guest identity rotates tokens, owns the room seat and records match
     guestClient.auth.token = guestAuth.accessToken;
     guestRoom = await guestClient.joinById(created.roomId, {
       playerId: 'spoofed-guest-id',
-      protocolVersion: '1.9.0',
+      protocolVersion: PROTOCOL_VERSION,
     });
     const joinedPromise = waitForEvent(guestRoom, 'room.snapshot');
     guestRoom.send('event', {

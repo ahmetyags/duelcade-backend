@@ -146,11 +146,18 @@ test('two clients share one authoritative board and can only play in turn', asyn
     if (chat.payload.event !== 'chat.received') throw new Error('Unexpected chat event');
     assert.equal(chat.payload.payload.message.text, 'İyi hamle!');
 
+    const skipNotificationPromise = waitForEvent(guestRoom, 'round.skip.updated');
     const skipRequestedPromise = waitForEvent(hostRoom, 'state.patch', (message) => {
       const state = turnState(message);
       return state?.roundId === next.roundId && state.skipVotes[0] === true;
     });
     hostRoom.send('event', { event: 'round.skip.vote', payload: { vote: true } });
+    const skipNotification = await skipNotificationPromise;
+    assert.equal(skipNotification.payload.event, 'round.skip.updated');
+    if (skipNotification.payload.event === 'round.skip.updated') {
+      assert.equal(skipNotification.payload.payload.requestedByPlayerId, initial.playerIds[0]);
+      assert.deepEqual(skipNotification.payload.payload.skipVotes, [true, false]);
+    }
     const skipRequested = turnState(await skipRequestedPromise);
     assert.deepEqual(skipRequested?.skipVotes, [true, false]);
 

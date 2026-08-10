@@ -30,6 +30,36 @@ export interface RotateSessionInput {
   now: number;
 }
 
+export type AccountProvider = 'email' | 'google' | 'facebook' | 'github';
+
+export interface CreateAccountSessionInput {
+  playerId: string;
+  displayName: string;
+  provider: AccountProvider;
+  providerSubject: string;
+  email: string | null;
+  passwordHash: string | null;
+  sessionId: string;
+  refreshTokenHash: string;
+  refreshTokenExpiresAt: number;
+}
+
+export interface AccountCredential {
+  player: StoredPlayer;
+  passwordHash: string;
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  playerId: string;
+  displayName: string;
+  totalScore: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  winRate: number;
+}
+
 export interface MatchRecord {
   id: string;
   roomId: string;
@@ -110,6 +140,11 @@ export interface PersistenceStore {
   initialize(): Promise<void>;
   close(): Promise<void>;
   createGuestSession(input: CreateGuestSessionInput): Promise<StoredPlayer>;
+  createEmailAccount?(input: CreateAccountSessionInput): Promise<StoredPlayer | null>;
+  findEmailAccount?(email: string): Promise<AccountCredential | null>;
+  createSessionForPlayer?(input: Omit<CreateAccountSessionInput, 'displayName' | 'provider' | 'providerSubject' | 'email' | 'passwordHash'>): Promise<StoredPlayer | null>;
+  upsertOAuthAccount?(input: CreateAccountSessionInput): Promise<StoredPlayer>;
+  listLeaderboard?(limit: number): Promise<LeaderboardEntry[]>;
   rotateSession(input: RotateSessionInput): Promise<{
     player: StoredPlayer;
     sessionId: string;

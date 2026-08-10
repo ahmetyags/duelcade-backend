@@ -897,11 +897,13 @@ export class DuelcadeRoom extends Room {
 
     if (!vote) {
       session.state.skipVotes = [false, false];
+      this.broadcastSkipVotes(null);
       this.broadcastTurnMatch();
       return;
     }
 
     session.state.skipVotes[playerIndex as 0 | 1] = true;
+    this.broadcastSkipVotes(player.id);
     if (!session.state.skipVotes.every(Boolean)) {
       this.broadcastTurnMatch();
       return;
@@ -914,6 +916,15 @@ export class DuelcadeRoom extends Room {
       this.broadcastTurnMatch();
       this.completeGame();
     }
+  }
+
+  private broadcastSkipVotes(requestedByPlayerId: string | null): void {
+    const skipVotes = this.game.turnSession?.state.skipVotes;
+    if (!skipVotes) return;
+    this.broadcastEvent({
+      event: 'round.skip.updated',
+      payload: { skipVotes: [...skipVotes] as [boolean, boolean], requestedByPlayerId },
+    });
   }
 
   private broadcastTurnMatch(): void {

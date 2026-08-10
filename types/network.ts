@@ -9,7 +9,7 @@ import type { ClientPuzzleState, PuzzleAction, PuzzleFeedback } from './puzzle';
 import type { TurnMatchState } from './turnGame';
 
 /** Protocol version for compatibility checking. */
-export const PROTOCOL_VERSION = '1.9.0' as const;
+export const PROTOCOL_VERSION = '1.10.0' as const;
 
 /**
  * Application-owned WebSocket close codes.
@@ -67,6 +67,7 @@ export type ServerEvent =
   | { event: 'game.completed'; payload: GameCompletedPayload }
   | { event: 'game.failed'; payload: GameFailedPayload }
   | { event: 'rematch.prompt'; payload: RematchPromptPayload }
+  | { event: 'round.skip.updated'; payload: RoundSkipUpdatedPayload }
   | { event: 'error'; payload: ErrorPayload };
 
 /** Full client message with base fields. */
@@ -156,6 +157,11 @@ export interface MatchForfeitPayload {
 
 export interface RoundSkipVotePayload {
   readonly vote: boolean;
+}
+
+export interface RoundSkipUpdatedPayload {
+  readonly skipVotes: readonly [boolean, boolean];
+  readonly requestedByPlayerId: string | null;
 }
 
 // ─── Server payload definitions ────────────────────────────────────

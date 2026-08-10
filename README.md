@@ -9,6 +9,8 @@ Bu proje şu anda:
 - hamle, süre, skor ve sonuç doğrulamasını,
 - oda koltuğu ve oyuncu kimliği korumalarını,
 - sunucu üretimli anonim oyuncu kimliğini ve döndürülen oturum tokenlarını,
+- Google, Facebook, GitHub OAuth ve scrypt ile korunan e-posta hesaplarını,
+- sunucu tarafından hesaplanan genel leaderboard'u,
 - PostgreSQL üzerinde kalıcı maç geçmişini,
 - idempotent XP ledger'ını, oyuncu seviyesini ve dört çekirdek mod ustalığını,
 - günlük görev ilerlemesini ve yalnızca görsel kozmetik envanterini,
@@ -36,10 +38,15 @@ Sunucu varsayılan olarak `http://localhost:2567` adresinde çalışır.
 ```text
 GET /health
 POST /v1/auth/guest
+POST /v1/auth/email/register
+POST /v1/auth/email/login
+GET /v1/auth/oauth/:provider/start
+POST /v1/auth/oauth/exchange
 POST /v1/auth/refresh
 POST /v1/auth/logout
 GET|PATCH /v1/me
 GET /v1/matches
+GET /v1/leaderboard
 GET /v1/progression
 POST /v1/quests/:questKey/claim
 PATCH /v1/me/cosmetics
@@ -51,6 +58,10 @@ Access tokenlar 15 dakika geçerlidir. Uzun ömürlü refresh tokenlar açık me
 olarak saklanmaz; SHA-256 özetleri PostgreSQL'de tutulur ve her yenilemede
 değiştirilir. WebSocket oda koltuğunun kimliği access token içindeki sunucu
 üretimli oyuncu UUID'sinden alınır.
+
+OAuth istemci sırları yalnızca backend ortam değişkenlerinde tutulur. Google,
+Facebook ve GitHub uygulamalarında callback adresini
+`{PUBLIC_BASE_URL}/v1/auth/oauth/{provider}/callback` biçiminde kaydedin.
 
 Analitik endpoint'i geçerli access token ister, en fazla 25 olaylık batch kabul
 eder ve olay adı/özelliklerini kapalı bir şemayla doğrular. İstemciden oyuncu
