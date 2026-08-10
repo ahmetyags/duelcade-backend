@@ -405,6 +405,7 @@ export class PostgresStore implements PersistenceStore {
         LEFT JOIN match_players AS mp ON mp.player_id = player.id
         LEFT JOIN matches AS match ON match.id = mp.match_id
         GROUP BY player.id, player.display_name
+        HAVING COUNT(mp.match_id) > 0
       )
       SELECT *, row_number() OVER (
         ORDER BY wins DESC, total_score DESC, losses ASC, display_name ASC
