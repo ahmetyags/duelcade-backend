@@ -30,7 +30,7 @@ export interface RotateSessionInput {
   now: number;
 }
 
-export type AccountProvider = 'email' | 'google' | 'facebook' | 'github';
+export type AccountProvider = 'email' | 'google' | 'facebook' | 'github' | 'firebase';
 
 export interface CreateAccountSessionInput {
   playerId: string;

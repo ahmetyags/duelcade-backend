@@ -16,6 +16,7 @@ import {
 } from '../server/progression';
 import type {
   CreateGuestSessionInput,
+  CreateAccountSessionInput,
   EquipCosmeticResult,
   MatchHistoryItem,
   MatchRecord,
@@ -34,6 +35,7 @@ import { PROTOCOL_VERSION, type ServerMessage } from '../types/network';
 class MemoryStore implements PersistenceStore {
   readonly available = true;
   readonly players = new Map<string, StoredPlayer>();
+  readonly identities = new Map<string, string>();
   readonly sessions = new Map<string, {
     playerId: string;
     sessionId: string;
@@ -83,6 +85,29 @@ class MemoryStore implements PersistenceStore {
       sessionId: input.sessionId,
       expiresAt: input.refreshTokenExpiresAt,
     });
+    return player;
+  }
+
+  async upsertOAuthAccount(input: CreateAccountSessionInput): Promise<StoredPlayer> {
+    const identityKey = `${input.provider}:${input.providerSubject}`;
+    const existingId = this.identities.get(identityKey);
+    const existing = existingId ? this.players.get(existingId) : null;
+    if (existing) {
+      this.sessions.set(input.refreshTokenHash, {
+        playerId: existing.id,
+        sessionId: input.sessionId,
+        expiresAt: input.refreshTokenExpiresAt,
+      });
+      return existing;
+    }
+    const player = await this.createGuestSession({
+      playerId: input.playerId,
+      displayName: input.displayName,
+      sessionId: input.sessionId,
+      refreshTokenHash: input.refreshTokenHash,
+      refreshTokenExpiresAt: input.refreshTokenExpiresAt,
+    });
+    this.identities.set(identityKey, player.id);
     return player;
   }
 
@@ -610,6 +635,53 @@ test('secure guest identity rotates tokens, owns the room seat and records match
   } finally {
     await hostRoom?.leave();
     await guestRoom?.leave();
+    await server.gracefullyShutdown(false);
+  }
+});
+
+test('Firebase ID tokens create and restore one authoritative Duelcade account', async () => {
+  const store = new MemoryStore();
+  const runtime: BackendRuntime = {
+    store,
+    tokens: new TokenService('firebase-test-secret-with-thirty-two-bytes-minimum'),
+    allowLegacyPlayerIds: true,
+    firebaseAuth: {
+      async verify(idToken) {
+        if (idToken !== `valid-${'x'.repeat(110)}`) throw new Error('invalid token');
+        return {
+          uid: 'firebase-user-1',
+          email: 'ada@example.com',
+          emailVerified: true,
+          displayName: 'Ada Firebase',
+          signInProvider: 'google.com',
+        };
+      },
+    },
+  };
+  const server = createGameServer(runtime);
+  const port = 34_000 + Math.floor(Math.random() * 1_000);
+  await server.listen(port, '127.0.0.1');
+  const endpoint = `http://127.0.0.1:${port}/v1/auth/firebase/exchange`;
+  const exchange = (idToken: string) => fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ idToken }),
+  });
+  try {
+    const firstResponse = await exchange(`valid-${'x'.repeat(110)}`);
+    assert.equal(firstResponse.status, 200);
+    const first = await firstResponse.json() as AuthResponse;
+    assert.equal(first.player.displayName, 'Ada Firebase');
+
+    const secondResponse = await exchange(`valid-${'x'.repeat(110)}`);
+    assert.equal(secondResponse.status, 200);
+    const second = await secondResponse.json() as AuthResponse;
+    assert.equal(second.player.id, first.player.id);
+    assert.notEqual(second.refreshToken, first.refreshToken);
+
+    const rejected = await exchange(`invalid-${'x'.repeat(110)}`);
+    assert.equal(rejected.status, 401);
+  } finally {
     await server.gracefullyShutdown(false);
   }
 });

@@ -42,6 +42,10 @@ const EmailRegisterSchema = EmailLoginSchema.extend({
 const OAuthProviderSchema = z.enum(['google', 'facebook', 'github']);
 const OAuthStartSchema = z.object({ redirectUri: z.string().url().max(500) });
 const OAuthExchangeSchema = z.object({ code: z.string().min(40).max(100) });
+const FirebaseExchangeSchema = z.object({
+  idToken: z.string().min(100).max(10_000),
+  displayName: DisplayNameSchema.optional(),
+});
 const UpdateProfileSchema = z.object({
   displayName: DisplayNameSchema,
 });
@@ -288,15 +292,71 @@ export function configureApi(
   );
 
   router.get('/v1/auth/providers', (_request: Request, response: Response) => {
+    const firebaseProviders = new Set(
+      (process.env.FIREBASE_AUTH_PROVIDERS ?? 'email,google,facebook,github')
+        .split(',')
+        .map((provider) => provider.trim().toLowerCase()),
+    );
+    const firebase = Boolean(runtime.firebaseAuth);
     response.json({
       providers: {
-        email: Boolean(runtime.store?.createEmailAccount && runtime.store.findEmailAccount),
-        google: oauthAvailable('google'),
-        facebook: oauthAvailable('facebook'),
-        github: oauthAvailable('github'),
+        firebase,
+        email: firebase
+          ? firebaseProviders.has('email')
+          : Boolean(runtime.store?.createEmailAccount && runtime.store.findEmailAccount),
+        google: firebase ? firebaseProviders.has('google') : oauthAvailable('google'),
+        facebook: firebase ? firebaseProviders.has('facebook') : oauthAvailable('facebook'),
+        github: firebase ? firebaseProviders.has('github') : oauthAvailable('github'),
       },
     });
   });
+
+  router.post(
+    '/v1/auth/firebase/exchange',
+    rateLimit(15 * 60 * 1000, 30),
+    async (request: Request, response: Response) => {
+      if (!runtime.store?.upsertOAuthAccount || !runtime.tokens || !runtime.firebaseAuth) {
+        response.status(503).json({ error: 'FIREBASE_AUTH_NOT_CONFIGURED' });
+        return;
+      }
+      const parsed = FirebaseExchangeSchema.safeParse(request.body);
+      if (!parsed.success) {
+        response.status(400).json({ error: 'INVALID_REQUEST' });
+        return;
+      }
+      try {
+        const identity = await runtime.firebaseAuth.verify(parsed.data.idToken);
+        const playerId = randomUUID();
+        const issued = runtime.tokens.issue(playerId);
+        const displayName = (
+          identity.displayName
+          ?? parsed.data.displayName
+          ?? identity.email?.split('@')[0]
+          ?? 'Duelcade Player'
+        ).trim().slice(0, 24) || 'Duelcade Player';
+        const player = await runtime.store.upsertOAuthAccount({
+          playerId,
+          displayName,
+          provider: 'firebase',
+          providerSubject: identity.uid,
+          email: identity.emailVerified ? identity.email : null,
+          passwordHash: null,
+          sessionId: issued.sessionId,
+          refreshTokenHash: issued.refreshTokenHash,
+          refreshTokenExpiresAt: issued.refreshTokenExpiresAt,
+        });
+        const finalIssued = player.id === playerId
+          ? issued
+          : { ...issued, ...runtime.tokens.issueAccess(player.id, issued.sessionId) };
+        response.json(sessionResponse(player, finalIssued));
+      } catch (error) {
+        console.warn('[firebase-auth] ID token verification failed', {
+          error: error instanceof Error ? error.message : 'unknown',
+        });
+        response.status(401).json({ error: 'INVALID_FIREBASE_TOKEN' });
+      }
+    },
+  );
 
   router.post(
     '/v1/auth/email/register',

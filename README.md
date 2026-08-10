@@ -42,6 +42,7 @@ POST /v1/auth/email/register
 POST /v1/auth/email/login
 GET /v1/auth/oauth/:provider/start
 POST /v1/auth/oauth/exchange
+POST /v1/auth/firebase/exchange
 POST /v1/auth/refresh
 POST /v1/auth/logout
 GET|PATCH /v1/me
@@ -62,6 +63,13 @@ değiştirilir. WebSocket oda koltuğunun kimliği access token içindeki sunucu
 OAuth istemci sırları yalnızca backend ortam değişkenlerinde tutulur. Google,
 Facebook ve GitHub uygulamalarında callback adresini
 `{PUBLIC_BASE_URL}/v1/auth/oauth/{provider}/callback` biçiminde kaydedin.
+
+Firebase geçişinde `FIREBASE_PROJECT_ID` ve
+`FIREBASE_AUTH_PROVIDERS=email,google,facebook,github` tanımlanır. İstemcinin
+Firebase ID token'ı Google'ın herkese açık imzalama anahtarlarıyla doğrulanır ve
+Firebase UID kalıcı bir Duelcade oyuncusuna eşlenir. Yalnızca ID token doğrulamak
+için service-account private key gerekmez. Eski email/OAuth endpoint'leri geçiş
+tamamlanana kadar geri dönüş olarak korunur.
 
 Analitik endpoint'i geçerli access token ister, en fazla 25 olaylık batch kabul
 eder ve olay adı/özelliklerini kapalı bir şemayla doğrular. İstemciden oyuncu

@@ -1,6 +1,7 @@
 import type { AuthContext } from 'colyseus';
 
 import { TokenService } from './auth/Tokens';
+import { createFirebaseTokenVerifier, type FirebaseTokenVerifier } from './auth/Firebase';
 import { PostgresStore } from './persistence/PostgresStore';
 import type { MatchRecord, PersistenceStore } from './persistence/types';
 import type { PlayerAvatarId } from '../types/profile';
@@ -15,6 +16,7 @@ export interface BackendRuntime {
   readonly store: PersistenceStore | null;
   readonly tokens: TokenService | null;
   readonly allowLegacyPlayerIds: boolean;
+  readonly firebaseAuth?: FirebaseTokenVerifier | null;
 }
 
 export function createDisabledRuntime(): BackendRuntime {
@@ -22,6 +24,7 @@ export function createDisabledRuntime(): BackendRuntime {
     store: null,
     tokens: null,
     allowLegacyPlayerIds: true,
+    firebaseAuth: null,
   };
 }
 
@@ -41,6 +44,9 @@ export async function createRuntimeFromEnvironment(): Promise<BackendRuntime> {
     store,
     tokens: new TokenService(tokenSecret),
     allowLegacyPlayerIds,
+    firebaseAuth: process.env.FIREBASE_PROJECT_ID?.trim()
+      ? createFirebaseTokenVerifier(process.env.FIREBASE_PROJECT_ID.trim())
+      : null,
   };
 }
 

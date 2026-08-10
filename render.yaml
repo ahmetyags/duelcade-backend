@@ -25,6 +25,10 @@ services:
         value: https://duelcade.expo.app
       - key: PUBLIC_BASE_URL
         value: https://duelcade-game-server.onrender.com
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_AUTH_PROVIDERS
+        value: email,google,facebook,github
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
