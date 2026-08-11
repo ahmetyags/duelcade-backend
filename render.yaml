@@ -6,7 +6,7 @@ services:
     region: frankfurt
     repo: https://github.com/ahmetyags/duelcade-backend
     branch: main
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
