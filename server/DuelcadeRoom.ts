@@ -437,7 +437,7 @@ export class DuelcadeRoom extends Room {
     // once more after the new Room has had time to attach its listeners; the
     // snapshot and state-set patches are idempotent.
     this.restoreReconnectedClient(client);
-    this.clock.setTimeout(() => this.restoreReconnectedClient(client), 750);
+    setTimeout(() => this.restoreReconnectedClient(client), 750);
   }
 
   private restoreReconnectedClient(client: EscapeClient): void {
