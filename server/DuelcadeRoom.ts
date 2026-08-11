@@ -1327,7 +1327,17 @@ export class DuelcadeRoom extends Room {
   }
 
   private findPlayer(client: EscapeClient): Player | undefined {
-    const restoredData = this.clientDataBySessionId.get(client.sessionId);
+    const auth = client.auth as RoomAuthData | undefined;
+    const restoredData = this.clientDataBySessionId.get(client.sessionId) ?? (
+      auth?.playerId
+        ? {
+            playerId: auth.playerId,
+            registered: true,
+            authenticated: auth.authenticated,
+            authoritativeAvatarId: auth.avatarId,
+          }
+        : undefined
+    );
     if (!client.userData?.registered) {
       if (!restoredData) return undefined;
       client.userData = { ...restoredData };
