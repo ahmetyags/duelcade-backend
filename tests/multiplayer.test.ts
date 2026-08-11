@@ -244,13 +244,14 @@ test('manual reconnect replays the room snapshot after a full client reload', as
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     restored = await new Client(endpoint).reconnect(reconnectionToken);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const snapshot = await waitForEvent(
+    const snapshotPromise = waitForEvent(
       restored,
       'room.snapshot',
       (message) => message.payload.event === 'room.snapshot'
         && message.payload.payload.isReconnect,
     );
+    restored.send('event', { event: 'room.sync', payload: {} });
+    const snapshot = await snapshotPromise;
 
     assert.equal(snapshot.payload.event, 'room.snapshot');
     if (snapshot.payload.event === 'room.snapshot') {

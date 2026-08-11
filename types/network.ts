@@ -34,6 +34,7 @@ export interface NetworkMessageBase {
 export type ClientEvent =
   | { event: 'room.create'; payload: RoomCreatePayload }
   | { event: 'room.join'; payload: RoomJoinPayload }
+  | { event: 'room.sync'; payload: Record<string, never> }
   | { event: 'room.leave'; payload: RoomLeavePayload }
   | { event: 'player.ready'; payload: PlayerReadyPayload }
   | { event: 'player.rolePreference'; payload: RolePreferencePayload }

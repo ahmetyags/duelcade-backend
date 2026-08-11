@@ -123,6 +123,7 @@ const ClientEventSchema = z.discriminatedUnion('event', [
       rolePreference: RolePreferenceSchema,
     }),
   }),
+  z.object({ event: z.literal('room.sync'), payload: z.object({}) }),
   z.object({ event: z.literal('room.leave'), payload: z.object({ reason: z.string().max(64) }) }),
   z.object({ event: z.literal('player.ready'), payload: z.object({ ready: z.boolean() }) }),
   z.object({
@@ -432,12 +433,10 @@ export class DuelcadeRoom extends Room {
     }
     this.resumeTimerIfReady();
     this.broadcastSnapshots(false);
-    // During onReconnect the client is still joining, so Colyseus queues these
-    // one-time events and flushes them after the JOIN_ROOM handshake. Replay
-    // once more after the new Room has had time to attach its listeners; the
-    // snapshot and state-set patches are idempotent.
+    // During onReconnect the client is still joining, so Colyseus queues this
+    // initial replay until the JOIN_ROOM handshake. The client also requests a
+    // deterministic sync after attaching its listeners.
     this.restoreReconnectedClient(client);
-    setTimeout(() => this.restoreReconnectedClient(client), 750);
   }
 
   private restoreReconnectedClient(client: EscapeClient): void {
@@ -555,6 +554,9 @@ export class DuelcadeRoom extends Room {
         break;
       case 'room.join':
         this.registerGuest(client, message.payload);
+        break;
+      case 'room.sync':
+        this.restoreReconnectedClient(client);
         break;
       case 'room.leave':
         this.evictClient(client, 1000, message.payload.reason);
