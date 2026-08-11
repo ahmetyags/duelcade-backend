@@ -208,3 +208,56 @@ test('two clients share one authoritative board and can only play in turn', asyn
     await server.gracefullyShutdown(false);
   }
 });
+
+test('manual reconnect replays the room snapshot after a full client reload', async () => {
+  const server = createGameServer();
+  const port = 32000 + Math.floor(Math.random() * 1000);
+  await server.listen(port, '127.0.0.1');
+
+  const endpoint = `http://127.0.0.1:${port}`;
+  const client = new Client(endpoint);
+  let room: Room | null = null;
+  let restored: Room | null = null;
+
+  try {
+    room = await client.create('duelcade', {
+      playerId: 'reload-host',
+      protocolVersion: PROTOCOL_VERSION,
+    });
+    const createdPromise = waitForEvent(room, 'room.snapshot');
+    room.send('event', {
+      event: 'room.create',
+      payload: {
+        displayName: 'Reload Host',
+        avatarId: 'sparkles',
+        rolePreference: 'no_preference',
+        difficulty: 'easy',
+        matchDurationMinutes: 2,
+      },
+    });
+    await createdPromise;
+    const reconnectionToken = room.reconnectionToken;
+    room.reconnection.maxRetries = 0;
+    (room as unknown as {
+      connection: { transport: { ws: { close: () => void } } };
+    }).connection.transport.ws.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    restored = await new Client(endpoint).reconnect(reconnectionToken);
+    const snapshot = await waitForEvent(
+      restored,
+      'room.snapshot',
+      (message) => message.payload.event === 'room.snapshot'
+        && message.payload.payload.isReconnect,
+    );
+
+    assert.equal(snapshot.payload.event, 'room.snapshot');
+    if (snapshot.payload.event === 'room.snapshot') {
+      assert.equal(snapshot.payload.payload.isReconnect, true);
+      assert.equal(snapshot.payload.payload.room.players[0]?.id, 'reload-host');
+    }
+  } finally {
+    await restored?.leave();
+    await server.gracefullyShutdown(false);
+  }
+});

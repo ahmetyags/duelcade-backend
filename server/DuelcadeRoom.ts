@@ -432,10 +432,10 @@ export class DuelcadeRoom extends Room {
     }
     this.resumeTimerIfReady();
     this.broadcastSnapshots(false);
-    // Manual client.reconnect() returns a new Room instance. Give the client a
-    // brief moment to attach its message listeners before replaying one-time
-    // session events.
-    this.clock.setTimeout(() => this.restoreReconnectedClient(client), 50);
+    // During onReconnect the client is still joining, so Colyseus queues these
+    // one-time events and flushes them after the JOIN_ROOM handshake. Delaying
+    // until after the handshake can race the new client's message listeners.
+    this.restoreReconnectedClient(client);
   }
 
   private restoreReconnectedClient(client: EscapeClient): void {
