@@ -433,9 +433,11 @@ export class DuelcadeRoom extends Room {
     this.resumeTimerIfReady();
     this.broadcastSnapshots(false);
     // During onReconnect the client is still joining, so Colyseus queues these
-    // one-time events and flushes them after the JOIN_ROOM handshake. Delaying
-    // until after the handshake can race the new client's message listeners.
+    // one-time events and flushes them after the JOIN_ROOM handshake. Replay
+    // once more after the new Room has had time to attach its listeners; the
+    // snapshot and state-set patches are idempotent.
     this.restoreReconnectedClient(client);
+    this.clock.setTimeout(() => this.restoreReconnectedClient(client), 750);
   }
 
   private restoreReconnectedClient(client: EscapeClient): void {

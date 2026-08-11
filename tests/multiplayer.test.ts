@@ -244,6 +244,7 @@ test('manual reconnect replays the room snapshot after a full client reload', as
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     restored = await new Client(endpoint).reconnect(reconnectionToken);
+    await new Promise((resolve) => setTimeout(resolve, 200));
     const snapshot = await waitForEvent(
       restored,
       'room.snapshot',
