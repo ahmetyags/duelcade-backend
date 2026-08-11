@@ -6,6 +6,7 @@ export interface FirebaseIdentity {
   emailVerified: boolean;
   displayName: string | null;
   signInProvider: string;
+  providerSubject: string | null;
 }
 
 export interface FirebaseTokenVerifier {
@@ -31,7 +32,19 @@ export function createFirebaseTokenVerifier(projectId: string): FirebaseTokenVer
         || typeof payload.auth_time !== 'number'
         || payload.auth_time > now + 60
       ) throw new Error('INVALID_FIREBASE_CLAIMS');
-      const firebase = payload.firebase as { sign_in_provider?: unknown } | undefined;
+      const firebase = payload.firebase as {
+        sign_in_provider?: unknown;
+        identities?: unknown;
+      } | undefined;
+      const providerIdentities = firebase?.identities
+        && typeof firebase.identities === 'object'
+        && typeof firebase.sign_in_provider === 'string'
+        ? (firebase.identities as Record<string, unknown>)[firebase.sign_in_provider]
+        : undefined;
+      const providerSubject = Array.isArray(providerIdentities)
+        && typeof providerIdentities[0] === 'string'
+        ? providerIdentities[0]
+        : null;
       return {
         uid: payload.sub,
         email: typeof payload.email === 'string' ? payload.email : null,
@@ -40,6 +53,7 @@ export function createFirebaseTokenVerifier(projectId: string): FirebaseTokenVer
         signInProvider: typeof firebase?.sign_in_provider === 'string'
           ? firebase.sign_in_provider
           : 'custom',
+        providerSubject,
       };
     },
   };

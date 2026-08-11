@@ -63,6 +63,11 @@ değiştirilir. WebSocket oda koltuğunun kimliği access token içindeki sunucu
 OAuth istemci sırları yalnızca backend ortam değişkenlerinde tutulur. Google,
 Facebook ve GitHub uygulamalarında callback adresini
 `{PUBLIC_BASE_URL}/v1/auth/oauth/{provider}/callback` biçiminde kaydedin.
+Firebase'in web GitHub akışı farklı bir callback host kullandığından GitHub için
+ayrı bir native/backend OAuth App oluşturun; bu uygulamanın callback adresi
+`{PUBLIC_BASE_URL}/v1/auth/oauth/github/callback` olmalıdır. Firebase'e bağlı
+GitHub OAuth App'in callback adresi ise Firebase Console'un verdiği
+`https://FIREBASE_PROJECT_ID.firebaseapp.com/__/auth/handler` adresidir.
 
 Firebase geçişinde `FIREBASE_PROJECT_ID` ve
 `FIREBASE_AUTH_PROVIDERS=email,google,facebook,github` tanımlanır. İstemcinin

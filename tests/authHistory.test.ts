@@ -654,6 +654,7 @@ test('Firebase ID tokens create and restore one authoritative Duelcade account',
           emailVerified: true,
           displayName: 'Ada Firebase',
           signInProvider: 'google.com',
+          providerSubject: 'google-user-1',
         };
       },
     },
@@ -672,6 +673,8 @@ test('Firebase ID tokens create and restore one authoritative Duelcade account',
     assert.equal(firstResponse.status, 200);
     const first = await firstResponse.json() as AuthResponse;
     assert.equal(first.player.displayName, 'Ada Firebase');
+    assert.equal(store.identities.get('google:google-user-1'), first.player.id);
+    assert.equal(store.identities.has('firebase:firebase-user-1'), false);
 
     const secondResponse = await exchange(`valid-${'x'.repeat(110)}`);
     assert.equal(secondResponse.status, 200);

@@ -307,6 +307,11 @@ export function configureApi(
         google: firebase ? firebaseProviders.has('google') : oauthAvailable('google'),
         facebook: firebase ? firebaseProviders.has('facebook') : oauthAvailable('facebook'),
         github: firebase ? firebaseProviders.has('github') : oauthAvailable('github'),
+        oauth: {
+          google: oauthAvailable('google'),
+          facebook: oauthAvailable('facebook'),
+          github: oauthAvailable('github'),
+        },
       },
     });
   });
@@ -326,6 +331,13 @@ export function configureApi(
       }
       try {
         const identity = await runtime.firebaseAuth.verify(parsed.data.idToken);
+        const accountProvider = identity.signInProvider === 'google.com'
+          ? 'google'
+          : identity.signInProvider === 'facebook.com'
+            ? 'facebook'
+            : identity.signInProvider === 'github.com'
+              ? 'github'
+              : 'firebase';
         const playerId = randomUUID();
         const issued = runtime.tokens.issue(playerId);
         const displayName = (
@@ -337,8 +349,8 @@ export function configureApi(
         const player = await runtime.store.upsertOAuthAccount({
           playerId,
           displayName,
-          provider: 'firebase',
-          providerSubject: identity.uid,
+          provider: accountProvider,
+          providerSubject: identity.providerSubject ?? identity.uid,
           email: identity.emailVerified ? identity.email : null,
           passwordHash: null,
           sessionId: issued.sessionId,
