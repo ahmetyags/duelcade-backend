@@ -12,7 +12,8 @@ import { createGameResult } from '../engine/ScoreCalculator';
 import {
   advanceTurnRound,
   applyTurnMove,
-  createTurnMatchSession,
+  createTurnMatchSessionFromOrder,
+  createTurnModeOrder,
   normalizeMatchDurationMinutes,
   resolveMemoryTurn,
   roundCountForDuration,
@@ -228,6 +229,7 @@ interface EscapeState {
   rematchVotes: Set<string>;
   result: GameResult | null;
   turnSession: TurnMatchSession | null;
+  modeOrder: TurnMatchSession['modeOrder'];
   lastTurnTickAt: number | null;
   forfeitedPlayerId: string | null;
   authenticatedPlayerIds: Set<string>;
@@ -502,9 +504,10 @@ export class DuelcadeRoom extends Room {
     const normalizedDuration = normalizeMatchDurationMinutes(matchDurationMinutes);
     const normalizedPuzzleCount = roundCountForDuration(normalizedDuration);
     const durationMs = normalizedDuration * 60 * 1000;
+    const seed = SeededRandom.generateSeed();
     return {
       players: [],
-      seed: SeededRandom.generateSeed(),
+      seed,
       difficulty,
       puzzleCount: normalizedPuzzleCount,
       matchDurationMinutes: normalizedDuration,
@@ -527,6 +530,7 @@ export class DuelcadeRoom extends Room {
       rematchVotes: new Set(),
       result: null,
       turnSession: null,
+      modeOrder: createTurnModeOrder(seed, normalizedPuzzleCount),
       lastTurnTickAt: null,
       forfeitedPlayerId: null,
       authenticatedPlayerIds: new Set(),
@@ -756,10 +760,10 @@ export class DuelcadeRoom extends Room {
       this.sendEvent(client, { event: 'role.assigned', payload: { role, roles } });
     }
 
-    this.game.turnSession = createTurnMatchSession(
+    this.game.turnSession = createTurnMatchSessionFromOrder(
       this.game.seed,
       [first.id, second.id],
-      this.game.puzzleCount,
+      this.game.modeOrder,
       this.game.difficulty,
       this.game.durationMs,
     );

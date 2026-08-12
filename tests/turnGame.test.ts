@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  CORE_TURN_GAME_MODES,
+  TURN_GAME_MODES,
   advanceTurnRound,
   applyTurnMove,
   createTurnMatchSession,
+  createTurnMatchSessionFromOrder,
+  createTurnModeOrder,
   encodeCipherGuess,
   findWinningLineCells,
   legalTurnMoves,
@@ -66,19 +68,44 @@ test('round order is seeded, shuffled and preserves match score', () => {
   const session = createTurnMatchSession('rotation-test', ['a', 'b'], 5);
   const sameSeed = createTurnMatchSession('rotation-test', ['a', 'b'], 5);
   assert.deepEqual(session.modeOrder, sameSeed.modeOrder);
-  assert.equal(
-    session.modeOrder.every((mode) => CORE_TURN_GAME_MODES.includes(
-      mode as (typeof CORE_TURN_GAME_MODES)[number],
-    )),
-    true,
-  );
-  assert.equal(new Set(session.modeOrder).size, CORE_TURN_GAME_MODES.length);
+  assert.equal(TURN_GAME_MODES.length, 10);
+  assert.equal(session.modeOrder.every((mode) => TURN_GAME_MODES.includes(mode)), true);
+  assert.equal(new Set(session.modeOrder).size, session.modeOrder.length);
   session.state.status = 'round_complete';
   session.state.scores = [1, 0];
   assert.equal(advanceTurnRound(session), true);
   assert.equal(session.state.mode, session.modeOrder[1]);
   assert.equal(session.state.activePlayerIndex, 1);
   assert.deepEqual(session.state.scores, [1, 0]);
+});
+
+test('room mode orders use all ten games without replacement and stay immutable', () => {
+  const first = createTurnModeOrder('room-alpha', 10);
+  const sameRoom = createTurnModeOrder('room-alpha', 10);
+  const nextRoom = createTurnModeOrder('room-bravo', 10);
+
+  assert.deepEqual(new Set(first), new Set(TURN_GAME_MODES));
+  assert.equal(new Set(first).size, 10);
+  assert.deepEqual(first, sameRoom);
+  assert.notDeepEqual(first, nextRoom);
+
+  const session = createTurnMatchSessionFromOrder(
+    'room-alpha',
+    ['a', 'b'],
+    first.slice(0, 5),
+  );
+  assert.deepEqual(session.modeOrder, first.slice(0, 5));
+  first.reverse();
+  assert.notDeepEqual(session.modeOrder, first.slice(0, 5));
+});
+
+test('difficulty changes boards without changing the requested game count', () => {
+  for (const difficulty of ['easy', 'medium', 'hard', 'final'] as const) {
+    const session = createTurnMatchSession(`count-${difficulty}`, ['a', 'b'], 5, difficulty);
+    assert.equal(session.state.totalRounds, 5);
+    assert.equal(session.modeOrder.length, 5);
+    assert.equal(new Set(session.modeOrder).size, 5);
+  }
 });
 
 test('hard difficulty scales compact games to roughly thirty cells', () => {

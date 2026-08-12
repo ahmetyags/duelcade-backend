@@ -14,7 +14,19 @@ export const CORE_TURN_GAME_MODES = [
   'neon_trail',
 ] as const satisfies readonly TurnGameMode[];
 
-const MODES: TurnGameMode[] = [...CORE_TURN_GAME_MODES];
+/** Complete selectable pool. Keep analytics "core" modes separate from matchmaking. */
+export const TURN_GAME_MODES = [
+  'rune_grid',
+  'pipe_circuit',
+  'connect_four',
+  'resonance_dials',
+  'memory_pairs',
+  'cipher_clash',
+  'circuit_claim',
+  'neon_trail',
+  'gateway_race',
+  'polarity_war',
+] as const satisfies readonly TurnGameMode[];
 
 interface BoardConfig {
   rows: number;
@@ -109,10 +121,10 @@ function boardConfig(mode: TurnGameMode, difficulty: Difficulty): BoardConfig {
   return { rows: dialCount, columns: 1, winLength: 0 };
 }
 
-function createModeOrder(
+export function createTurnModeOrder(
   seed: string,
   totalRounds: number,
-  modePool: readonly TurnGameMode[],
+  modePool: readonly TurnGameMode[] = TURN_GAME_MODES,
 ): TurnGameMode[] {
   const result: TurnGameMode[] = [];
   let cycle = 0;
@@ -397,15 +409,35 @@ export function createTurnMatchSession(
   totalRounds = 5,
   difficulty: Difficulty = 'easy',
   playerTimeLimitMs = 5 * 60 * 1000,
-  modePool: readonly TurnGameMode[] = MODES,
+  modePool: readonly TurnGameMode[] = TURN_GAME_MODES,
 ): TurnMatchSession {
   const normalizedRounds = Math.max(1, totalRounds);
-  const selectedModes = modePool.length > 0 ? modePool : MODES;
-  const modeOrder = createModeOrder(seed, normalizedRounds, selectedModes);
-  return newRound(
+  const selectedModes = modePool.length > 0 ? modePool : TURN_GAME_MODES;
+  const modeOrder = createTurnModeOrder(seed, normalizedRounds, selectedModes);
+  return createTurnMatchSessionFromOrder(
     seed,
     playerIds,
     modeOrder,
+    difficulty,
+    playerTimeLimitMs,
+  );
+}
+
+/** Starts a match from the immutable order selected when the room was created. */
+export function createTurnMatchSessionFromOrder(
+  seed: string,
+  playerIds: [string, string],
+  modeOrder: readonly TurnGameMode[],
+  difficulty: Difficulty = 'easy',
+  playerTimeLimitMs = 5 * 60 * 1000,
+): TurnMatchSession {
+  const fixedOrder = modeOrder.length > 0
+    ? [...modeOrder]
+    : createTurnModeOrder(seed, 1);
+  return newRound(
+    seed,
+    playerIds,
+    fixedOrder,
     difficulty,
     playerTimeLimitMs,
     0,

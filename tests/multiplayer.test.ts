@@ -171,9 +171,11 @@ test('two clients share one authoritative board and can only play in turn', asyn
     });
     guestRoom.send('event', { event: 'round.skip.vote', payload: { vote: true } });
     const [skippedHost, skippedGuest] = await Promise.all([skippedHostPromise, skippedGuestPromise]);
-    assert.deepEqual(turnState(skippedHost), turnState(skippedGuest));
-    assert.deepEqual(turnState(skippedHost)?.scores, [0, 0]);
-    assert.deepEqual(turnState(skippedHost)?.skipVotes, [false, false]);
+    const skippedState = turnState(skippedHost);
+    assert.deepEqual(skippedState, turnState(skippedGuest));
+    assert.notEqual(skippedState?.mode, initial.mode);
+    assert.deepEqual(skippedState?.scores, [0, 0]);
+    assert.deepEqual(skippedState?.skipVotes, [false, false]);
 
     const hostResultPromise = waitForEvent(hostRoom, 'game.completed');
     const guestResultPromise = waitForEvent(guestRoom, 'game.completed');
