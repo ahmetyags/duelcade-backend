@@ -111,7 +111,7 @@ const ClientEventSchema = z.discriminatedUnion('event', [
       avatarId: PlayerAvatarIdSchema,
       rolePreference: RolePreferenceSchema,
       difficulty: DifficultySchema,
-      matchDurationMinutes: z.number().int().min(2).max(25),
+      matchDurationMinutes: z.number().int().min(2).max(20),
     }),
   }),
   z.object({
