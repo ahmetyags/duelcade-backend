@@ -396,6 +396,7 @@ export class PostgresStore implements PersistenceStore {
     const result = await this.pool.query(`
       WITH stats AS (
         SELECT player.id AS player_id, player.display_name,
+          player.equipped_avatar, player.equipped_frame,
           COALESCE(SUM(mp.score), 0)::int AS total_score,
           COUNT(*) FILTER (WHERE match.winner_player_id = player.id)::int AS wins,
           COUNT(*) FILTER (WHERE match.winner_player_id IS NOT NULL AND match.winner_player_id <> player.id)::int AS losses,
@@ -404,7 +405,7 @@ export class PostgresStore implements PersistenceStore {
         JOIN player_identities AS identity ON identity.player_id = player.id
         LEFT JOIN match_players AS mp ON mp.player_id = player.id
         LEFT JOIN matches AS match ON match.id = mp.match_id
-        GROUP BY player.id, player.display_name
+        GROUP BY player.id, player.display_name, player.equipped_avatar, player.equipped_frame
         HAVING COUNT(mp.match_id) > 0
       )
       SELECT *, row_number() OVER (
@@ -420,6 +421,8 @@ export class PostgresStore implements PersistenceStore {
         rank: row.rank,
         playerId: row.player_id,
         displayName: row.display_name,
+        avatarId: row.equipped_avatar,
+        frameId: row.equipped_frame,
         totalScore: row.total_score,
         wins: row.wins,
         losses: row.losses,

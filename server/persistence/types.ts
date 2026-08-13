@@ -53,6 +53,8 @@ export interface LeaderboardEntry {
   rank: number;
   playerId: string;
   displayName: string;
+  avatarId: string;
+  frameId: string;
   totalScore: number;
   wins: number;
   losses: number;
